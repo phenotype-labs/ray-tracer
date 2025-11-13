@@ -25,6 +25,7 @@ pub struct RayTracer {
     num_boxes: usize,
     current_scene: Arc<Mutex<String>>,
     needs_reload: Arc<Mutex<bool>>,
+    show_grid: Arc<Mutex<bool>>,
 }
 
 impl RayTracer {
@@ -131,6 +132,7 @@ impl RayTracer {
             num_boxes,
             current_scene: Arc::new(Mutex::new(scene_name)),
             needs_reload: Arc::new(Mutex::new(false)),
+            show_grid: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -190,7 +192,7 @@ impl RayTracer {
     fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
         let fov = 0.785398;
-        let camera_uniform = camera.to_uniform(0.0, 800.0, fov);
+        let camera_uniform = camera.to_uniform(0.0, 800.0, fov, false);
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -463,7 +465,8 @@ impl RayTracer {
         time: f32,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         let fov = 0.785398;
-        let camera_uniform = camera.to_uniform(time, self.size.height as f32, fov);
+        let show_grid = *self.show_grid.lock().unwrap();
+        let camera_uniform = camera.to_uniform(time, self.size.height as f32, fov, show_grid);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -518,6 +521,7 @@ impl RayTracer {
         let raw_input = self.egui_state.take_egui_input(window);
         let current_scene = self.current_scene.clone();
         let needs_reload = self.needs_reload.clone();
+        let show_grid = self.show_grid.clone();
         let num_boxes = self.num_boxes;
         let resolution = (self.size.width, self.size.height);
 
@@ -614,6 +618,13 @@ impl RayTracer {
                         if changed {
                             *needs_reload.lock().unwrap() = true;
                         }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        let mut show_grid_val = show_grid.lock().unwrap();
+                        ui.checkbox(&mut *show_grid_val, "Show Grid Cells");
                     });
                 });
         });

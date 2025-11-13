@@ -14,7 +14,8 @@ struct Camera {
     time: f32,
     lod_factor: f32,
     min_pixel_size: f32,
-    _pad4: vec2<f32>,
+    show_grid: f32,
+    _pad4: f32,
 };
 
 struct Box {
@@ -186,6 +187,18 @@ fn is_cell_valid(cell: vec3<u32>, level: u32) -> bool {
     return cell.x < size.x && cell.y < size.y && cell.z < size.z;
 }
 
+// Check if a world position is near a grid cell boundary
+fn is_near_grid_boundary(pos: vec3<f32>, cell_size: f32, threshold: f32) -> bool {
+    let rel_pos = pos - grid_meta.bounds_min;
+    let cell_local = (rel_pos % cell_size) / cell_size;
+
+    let dist_x = min(cell_local.x, 1.0 - cell_local.x);
+    let dist_y = min(cell_local.y, 1.0 - cell_local.y);
+    let dist_z = min(cell_local.z, 1.0 - cell_local.z);
+
+    return dist_x < threshold || dist_y < threshold || dist_z < threshold;
+}
+
 // DDA ray marching through grid
 fn trace_ray(ray: Ray) -> vec3<f32> {
     var closest_hit: HitInfo;
@@ -311,7 +324,17 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     let diffuse = max(dot(closest_hit.normal, -light_dir), 0.0);
     let ambient = 0.3;
 
-    let final_color = closest_hit.color * (ambient + diffuse * 0.7);
+    var final_color = closest_hit.color * (ambient + diffuse * 0.7);
+
+    // Grid visualization
+    if camera.show_grid > 0.5 {
+        let cell_size = grid_meta.finest_cell_size;
+        let threshold = 0.02;
+
+        if is_near_grid_boundary(closest_hit.position, cell_size, threshold) {
+            final_color = mix(final_color, vec3<f32>(0.0, 1.0, 0.0), 0.6);
+        }
+    }
 
     return final_color;
 }

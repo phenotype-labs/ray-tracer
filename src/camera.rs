@@ -93,7 +93,7 @@ impl Camera {
         self.yaw += self.movement.rotation_velocity() * CAMERA_ROTATION_SPEED;
     }
 
-    pub fn to_uniform(&self, time: f32, screen_height: f32, fov: f32) -> CameraUniform {
+    pub fn to_uniform(&self, time: f32, screen_height: f32, fov: f32, show_grid: bool) -> CameraUniform {
         let lod_factor = screen_height / (2.0 * (fov / 2.0).tan());
         let min_pixel_size = 2.0;
 
@@ -108,7 +108,8 @@ impl Camera {
             time,
             lod_factor,
             min_pixel_size,
-            _pad4: [0.0, 0.0],
+            show_grid: if show_grid { 1.0 } else { 0.0 },
+            _pad4: 0.0,
         }
     }
 
