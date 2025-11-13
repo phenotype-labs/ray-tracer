@@ -344,6 +344,28 @@ impl HierarchicalGrid {
         grid
     }
 
+    fn cells_in_bounds(
+        obj_min: Vec3,
+        obj_max: Vec3,
+        bounds_min: Vec3,
+        cell_size: f32,
+        grid_size: [usize; 3],
+    ) -> impl Iterator<Item = (usize, usize, usize)> {
+        let min_cell = Self::world_to_cell_static(&obj_min, bounds_min, cell_size);
+        let max_cell = Self::world_to_cell_static(&obj_max, bounds_min, cell_size);
+
+        (min_cell.x..=max_cell.x)
+            .flat_map(move |x| {
+                (min_cell.y..=max_cell.y).flat_map(move |y| {
+                    (min_cell.z..=max_cell.z).filter_map(move |z| {
+                        let (xu, yu, zu) = (x as usize, y as usize, z as usize);
+                        (xu < grid_size[0] && yu < grid_size[1] && zu < grid_size[2])
+                            .then_some((xu, yu, zu))
+                    })
+                })
+            })
+    }
+
     fn assign_object(&mut self, obj: &BoxData, obj_id: u32) {
         let obj_min = Vec3::from_array(obj.min);
         let obj_max = Vec3::from_array(obj.max);
@@ -351,47 +373,19 @@ impl HierarchicalGrid {
 
         // Assign to all coarse levels
         for level in self.coarse_levels.iter_mut() {
-            let cell_size = level.cell_size;
-            let grid_size = level.grid_size;
-
-            let min_cell = Self::world_to_cell_static(&obj_min, bounds_min, cell_size);
-            let max_cell = Self::world_to_cell_static(&obj_max, bounds_min, cell_size);
-
-            for x in min_cell.x..=max_cell.x {
-                for y in min_cell.y..=max_cell.y {
-                    for z in min_cell.z..=max_cell.z {
-                        let xu = x as usize;
-                        let yu = y as usize;
-                        let zu = z as usize;
-                        if xu < grid_size[0] && yu < grid_size[1] && zu < grid_size[2] {
-                            level.increment_cell(xu, yu, zu);
-                        }
-                    }
-                }
-            }
+            Self::cells_in_bounds(obj_min, obj_max, bounds_min, level.cell_size, level.grid_size)
+                .for_each(|(x, y, z)| level.increment_cell(x, y, z));
         }
 
         // Assign to fine level
-        let cell_size = self.fine_level.cell_size;
-        let grid_size = self.fine_level.grid_size;
-
-        let min_cell = Self::world_to_cell_static(&obj_min, bounds_min, cell_size);
-        let max_cell = Self::world_to_cell_static(&obj_max, bounds_min, cell_size);
-
-        for x in min_cell.x..=max_cell.x {
-            for y in min_cell.y..=max_cell.y {
-                for z in min_cell.z..=max_cell.z {
-                    let xu = x as usize;
-                    let yu = y as usize;
-                    let zu = z as usize;
-                    if xu < grid_size[0] &&
-                       yu < grid_size[1] &&
-                       zu < grid_size[2] {
-                        self.fine_level.add_object(xu, yu, zu, obj_id);
-                    }
-                }
-            }
-        }
+        Self::cells_in_bounds(
+            obj_min,
+            obj_max,
+            bounds_min,
+            self.fine_level.cell_size,
+            self.fine_level.grid_size,
+        )
+        .for_each(|(x, y, z)| self.fine_level.add_object(x, y, z, obj_id));
     }
 
     fn world_to_cell_static(pos: &Vec3, bounds_min: Vec3, cell_size: f32) -> glam::UVec3 {
@@ -406,21 +400,27 @@ impl HierarchicalGrid {
     /// Flatten grid to GPU-compatible buffers
     fn to_gpu_buffers(&self) -> (GridMetadata, Vec<u8>, Vec<FineCellData>) {
         // Create metadata (pad vec3 to vec4 for WGSL alignment)
-        let mut grid_sizes = [[0u32; 4]; GRID_LEVELS];
-        for (i, level) in self.coarse_levels.iter().enumerate() {
-            grid_sizes[i] = [
-                level.grid_size[0] as u32,
-                level.grid_size[1] as u32,
-                level.grid_size[2] as u32,
+        let grid_sizes: [[u32; 4]; GRID_LEVELS] = {
+            let mut sizes = [[0u32; 4]; GRID_LEVELS];
+            self.coarse_levels
+                .iter()
+                .enumerate()
+                .for_each(|(i, level)| {
+                    sizes[i] = [
+                        level.grid_size[0] as u32,
+                        level.grid_size[1] as u32,
+                        level.grid_size[2] as u32,
+                        0, // Padding
+                    ];
+                });
+            sizes[GRID_LEVELS - 1] = [
+                self.fine_level.grid_size[0] as u32,
+                self.fine_level.grid_size[1] as u32,
+                self.fine_level.grid_size[2] as u32,
                 0, // Padding
             ];
-        }
-        grid_sizes[GRID_LEVELS - 1] = [
-            self.fine_level.grid_size[0] as u32,
-            self.fine_level.grid_size[1] as u32,
-            self.fine_level.grid_size[2] as u32,
-            0, // Padding
-        ];
+            sizes
+        };
 
         let metadata = GridMetadata {
             bounds_min: self.bounds.min.to_array(),
@@ -431,23 +431,31 @@ impl HierarchicalGrid {
         };
 
         // Flatten coarse level counts
-        let mut all_counts = Vec::new();
-        for level in &self.coarse_levels {
-            all_counts.extend_from_slice(&level.counts);
-        }
+        let all_counts: Vec<u8> = self
+            .coarse_levels
+            .iter()
+            .flat_map(|level| level.counts.iter().copied())
+            .collect();
 
         // Flatten fine level cells
-        let fine_cells: Vec<FineCellData> = self.fine_level.cells.iter().map(|cell| {
-            let mut cell_data = FineCellData {
-                object_indices: [0; MAX_OBJECTS_PER_CELL],
-                count: cell.len() as u32,
-                _pad: [0; 3],
-            };
-            for (i, &obj_id) in cell.iter().take(MAX_OBJECTS_PER_CELL).enumerate() {
-                cell_data.object_indices[i] = obj_id;
-            }
-            cell_data
-        }).collect();
+        let fine_cells: Vec<FineCellData> = self
+            .fine_level
+            .cells
+            .iter()
+            .map(|cell| {
+                let mut object_indices = [0u32; MAX_OBJECTS_PER_CELL];
+                cell.iter()
+                    .take(MAX_OBJECTS_PER_CELL)
+                    .enumerate()
+                    .for_each(|(i, &obj_id)| object_indices[i] = obj_id);
+
+                FineCellData {
+                    object_indices,
+                    count: cell.len() as u32,
+                    _pad: [0; 3],
+                }
+            })
+            .collect();
 
         (metadata, all_counts, fine_cells)
     }
@@ -469,12 +477,24 @@ struct MovementState {
 }
 
 impl MovementState {
-    const fn velocity(&self) -> (f32, f32, f32) {
-        let forward = self.forward as i32 - self.backward as i32;
-        let right = self.right as i32 - self.left as i32;
-        let up = self.up as i32 - self.down as i32;
+    const fn to_direction(&self, positive: bool, negative: bool) -> f32 {
+        match (positive, negative) {
+            (true, false) => 1.0,
+            (false, true) => -1.0,
+            _ => 0.0,
+        }
+    }
 
-        (forward as f32, right as f32, up as f32)
+    const fn velocity(&self) -> (f32, f32, f32) {
+        (
+            self.to_direction(self.forward, self.backward),
+            self.to_direction(self.right, self.left),
+            self.to_direction(self.up, self.down),
+        )
+    }
+
+    const fn rotation_velocity(&self) -> f32 {
+        self.to_direction(self.rotate_right, self.rotate_left)
     }
 }
 
@@ -516,15 +536,12 @@ impl Camera {
     fn update(&mut self) {
         let (fwd, right_dir, up_dir) = self.movement.velocity();
 
-        let forward_vec = self.forward() * fwd * CAMERA_SPEED;
-        let right_vec = self.right() * right_dir * CAMERA_SPEED;
-        let up_vec = Vec3::Y * up_dir * CAMERA_SPEED;
+        let displacement = self.forward() * fwd * CAMERA_SPEED
+            + self.right() * right_dir * CAMERA_SPEED
+            + Vec3::Y * up_dir * CAMERA_SPEED;
 
-        self.position += forward_vec + right_vec + up_vec;
-
-        // Handle camera rotation
-        let rotate_delta = (self.movement.rotate_right as i32 - self.movement.rotate_left as i32) as f32;
-        self.yaw += rotate_delta * CAMERA_ROTATION_SPEED;
+        self.position += displacement;
+        self.yaw += self.movement.rotation_velocity() * CAMERA_ROTATION_SPEED;
     }
 
     fn to_uniform(&self, time: f32) -> CameraUniform {
@@ -562,62 +579,55 @@ impl Camera {
 
 /// Creates a huge scene to stress test the BVH
 fn create_default_scene() -> Vec<BoxData> {
-    let mut boxes = vec![
-        // Ground plane
-        BoxData::new([-50.0, -1.0, -50.0], [50.0, -0.99, 50.0], [0.3, 0.3, 0.3]),
-    ];
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hash, Hasher};
+
+    let ground = BoxData::new([-50.0, -1.0, -50.0], [50.0, -0.99, 50.0], [0.3, 0.3, 0.3]);
 
     // Dense grid of cubes (20x20 = 400 boxes)
-    for x in -10..10 {
-        for z in -10..10 {
+    let dense_grid = (-10..10).flat_map(|x| {
+        (-10..10).map(move |z| {
             let fx = x as f32 * 1.5;
             let fz = z as f32 * 1.5 - 15.0;
             let size = 0.4;
-
             let color = [
                 ((x + 10) as f32 / 20.0) * 0.8 + 0.2,
                 ((z + 10) as f32 / 20.0) * 0.8 + 0.2,
                 0.6,
             ];
-
-            boxes.push(BoxData::new(
+            BoxData::new(
                 [fx - size, -0.5, fz - size],
                 [fx + size, 0.5, fz + size],
                 color,
-            ));
-        }
-    }
+            )
+        })
+    });
 
     // Floating structures above (15x15x3 = 675 boxes)
-    for x in -7..8 {
-        for z in -7..8 {
-            for y in 0..3 {
+    let floating_structures = (-7..8).flat_map(|x| {
+        (-7..8).flat_map(move |z| {
+            (0..3).map(move |y| {
                 let fx = x as f32 * 2.0;
                 let fy = y as f32 * 2.0 + 2.0;
                 let fz = z as f32 * 2.0 - 10.0;
                 let size = 0.35;
-
                 let color = [
                     ((x + 7) as f32 / 15.0) * 0.7 + 0.3,
-                    ((y) as f32 / 3.0) * 0.5 + 0.4,
+                    (y as f32 / 3.0) * 0.5 + 0.4,
                     ((z + 7) as f32 / 15.0) * 0.7 + 0.3,
                 ];
-
-                boxes.push(BoxData::new(
+                BoxData::new(
                     [fx - size, fy - size, fz - size],
                     [fx + size, fy + size, fz + size],
                     color,
-                ));
-            }
-        }
-    }
+                )
+            })
+        })
+    });
 
     // Scattered random boxes (200 boxes)
-    use std::collections::hash_map::RandomState;
-    use std::hash::{BuildHasher, Hash, Hasher};
-
     let hasher_builder = RandomState::new();
-    for i in 0..200 {
+    let scattered_boxes = (0..200).map(|i| {
         let mut hasher = hasher_builder.build_hasher();
         i.hash(&mut hasher);
         let hash = hasher.finish();
@@ -626,75 +636,75 @@ fn create_default_scene() -> Vec<BoxData> {
         let y = (((hash >> 8) % 100) as f32 / 100.0) * 8.0 - 2.0;
         let z = (((hash >> 16) % 100) as f32 / 100.0) * 40.0 - 30.0;
         let size = (((hash >> 24) % 50) as f32 / 100.0) * 0.4 + 0.2;
-
         let color = [
             ((hash % 100) as f32 / 100.0) * 0.8 + 0.2,
             (((hash >> 8) % 100) as f32 / 100.0) * 0.8 + 0.2,
             (((hash >> 16) % 100) as f32 / 100.0) * 0.8 + 0.2,
         ];
-
-        boxes.push(BoxData::new(
+        BoxData::new(
             [x - size, y - size, z - size],
             [x + size, y + size, z + size],
             color,
-        ));
-    }
+        )
+    });
 
     // Tall pillars on the sides (8x10 = 80 boxes)
-    for side in [-15.0, 15.0] {
-        for z in -5..5 {
-            for y in 0..10 {
+    let pillars = [-15.0, 15.0].iter().flat_map(|&side| {
+        (-5..5).flat_map(move |z| {
+            (0..10).map(move |y| {
                 let fz = z as f32 * 2.0 - 10.0;
                 let fy = y as f32 * 1.5;
                 let size = 0.5;
-
                 let color = if side < 0.0 {
                     [0.8, 0.3, 0.3]
                 } else {
                     [0.3, 0.3, 0.8]
                 };
-
-                boxes.push(BoxData::new(
+                BoxData::new(
                     [side - size, fy - size, fz - size],
                     [side + size, fy + size, fz + size],
                     color,
-                ));
-            }
-        }
-    }
+                )
+            })
+        })
+    });
 
     // Moving boxes - VERY LARGE and BRIGHT to be impossible to miss
-    // Camera is at (0, 8, 15) looking down at negative Z
+    let moving_boxes = [
+        BoxData::create_moving_box(
+            Vec3::splat(4.0),
+            Vec3::new(0.0, 2.0, -15.0),
+            Vec3::new(0.0, 12.0, -15.0),
+            [1.0, 0.1, 0.1], // Bright red
+        ),
+        BoxData::create_moving_box(
+            Vec3::splat(3.0),
+            Vec3::new(-8.0, 3.0, -12.0),
+            Vec3::new(-8.0, 10.0, -12.0),
+            [0.1, 1.0, 0.1], // Bright green
+        ),
+        BoxData::create_moving_box(
+            Vec3::splat(3.0),
+            Vec3::new(8.0, 3.0, -12.0),
+            Vec3::new(8.0, 10.0, -12.0),
+            [0.1, 0.1, 1.0], // Bright blue
+        ),
+    ];
 
-    // Huge central moving box right in front of camera view
-    boxes.push(BoxData::create_moving_box(
-        Vec3::splat(4.0), // HUGE - 4 units
-        Vec3::new(0.0, 2.0, -15.0),  // Low position
-        Vec3::new(0.0, 12.0, -15.0), // High position - dramatic movement
-        [1.0, 0.1, 0.1], // Bright red
-    ));
-
-    // Two more giant boxes on the sides
-    boxes.push(BoxData::create_moving_box(
-        Vec3::splat(3.0),
-        Vec3::new(-8.0, 3.0, -12.0),
-        Vec3::new(-8.0, 10.0, -12.0),
-        [0.1, 1.0, 0.1], // Bright green
-    ));
-
-    boxes.push(BoxData::create_moving_box(
-        Vec3::splat(3.0),
-        Vec3::new(8.0, 3.0, -12.0),
-        Vec3::new(8.0, 10.0, -12.0),
-        [0.1, 0.1, 1.0], // Bright blue
-    ));
+    let boxes: Vec<BoxData> = std::iter::once(ground)
+        .chain(dense_grid)
+        .chain(floating_structures)
+        .chain(scattered_boxes)
+        .chain(pillars)
+        .chain(moving_boxes)
+        .collect();
 
     println!("Moving boxes added at:");
     println!("  Center: z=-15, moving y: 2->12");
     println!("  Left: x=-8, z=-12, moving y: 3->10");
     println!("  Right: x=8, z=-12, moving y: 3->10");
-
     println!("Scene created: {} boxes (3 moving)", boxes.len());
+
     boxes
 }
 
