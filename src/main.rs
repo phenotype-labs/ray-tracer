@@ -61,6 +61,317 @@ impl BoxData {
             _pad3: 0.0,
         }
     }
+
+    fn bounds(&self) -> AABB {
+        AABB {
+            min: Vec3::from_array(self.min),
+            max: Vec3::from_array(self.max),
+        }
+    }
+}
+
+/// Axis-Aligned Bounding Box
+#[derive(Copy, Clone, Debug)]
+struct AABB {
+    min: Vec3,
+    max: Vec3,
+}
+
+impl AABB {
+    fn union(&self, other: &AABB) -> AABB {
+        AABB {
+            min: self.min.min(other.min),
+            max: self.max.max(other.max),
+        }
+    }
+
+    fn center(&self) -> Vec3 {
+        (self.min + self.max) * 0.5
+    }
+
+    fn surface_area(&self) -> f32 {
+        let d = self.max - self.min;
+        2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
+    }
+}
+
+// === Hierarchical Grid System ===
+
+const GRID_LEVELS: usize = 4;
+const FINEST_CELL_SIZE: f32 = 16.0;  // Smallest cells: 16x16x16 units
+const MAX_OBJECTS_PER_CELL: usize = 64;
+
+/// Grid metadata for GPU
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct GridMetadata {
+    bounds_min: [f32; 3],
+    num_levels: u32,
+    bounds_max: [f32; 3],
+    finest_cell_size: f32,
+    grid_sizes: [[u32; 4]; GRID_LEVELS],  // Size of each level (padded to vec4)
+}
+
+/// Fine grid cell data for GPU
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+struct FineCellData {
+    object_indices: [u32; MAX_OBJECTS_PER_CELL],
+    count: u32,
+    _pad: [u32; 3],
+}
+
+/// Coarse grid level (stores only object count)
+struct CoarseGridLevel {
+    cell_size: f32,
+    grid_size: [usize; 3],
+    counts: Vec<u8>,  // Flattened 3D array of object counts
+}
+
+impl CoarseGridLevel {
+    fn new(bounds: &AABB, cell_size: f32) -> Self {
+        let extent = bounds.max - bounds.min;
+        let grid_size = [
+            (extent.x / cell_size).ceil() as usize + 1,
+            (extent.y / cell_size).ceil() as usize + 1,
+            (extent.z / cell_size).ceil() as usize + 1,
+        ];
+
+        let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
+
+        Self {
+            cell_size,
+            grid_size,
+            counts: vec![0; total_cells],
+        }
+    }
+
+    fn cell_index(&self, x: usize, y: usize, z: usize) -> usize {
+        x + y * self.grid_size[0] + z * self.grid_size[0] * self.grid_size[1]
+    }
+
+    fn increment_cell(&mut self, x: usize, y: usize, z: usize) {
+        let idx = self.cell_index(x, y, z);
+        if self.counts[idx] < 255 {
+            self.counts[idx] += 1;
+        }
+    }
+}
+
+/// Finest grid level (stores actual object indices)
+struct FineGridLevel {
+    cell_size: f32,
+    grid_size: [usize; 3],
+    cells: Vec<Vec<u32>>,  // Each cell contains object indices
+}
+
+impl FineGridLevel {
+    fn new(bounds: &AABB, cell_size: f32) -> Self {
+        let extent = bounds.max - bounds.min;
+        let grid_size = [
+            (extent.x / cell_size).ceil() as usize + 1,
+            (extent.y / cell_size).ceil() as usize + 1,
+            (extent.z / cell_size).ceil() as usize + 1,
+        ];
+
+        let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
+
+        Self {
+            cell_size,
+            grid_size,
+            cells: vec![Vec::new(); total_cells],
+        }
+    }
+
+    fn cell_index(&self, x: usize, y: usize, z: usize) -> usize {
+        x + y * self.grid_size[0] + z * self.grid_size[0] * self.grid_size[1]
+    }
+
+    fn add_object(&mut self, x: usize, y: usize, z: usize, object_id: u32) {
+        let idx = self.cell_index(x, y, z);
+        if self.cells[idx].len() < MAX_OBJECTS_PER_CELL {
+            self.cells[idx].push(object_id);
+        }
+    }
+}
+
+/// Complete hierarchical grid structure
+struct HierarchicalGrid {
+    bounds: AABB,
+    coarse_levels: Vec<CoarseGridLevel>,
+    fine_level: FineGridLevel,
+}
+
+impl HierarchicalGrid {
+    fn build(objects: &[BoxData]) -> Self {
+        // Calculate scene bounds
+        let mut bounds = objects[0].bounds();
+        for obj in &objects[1..] {
+            bounds = bounds.union(&obj.bounds());
+        }
+
+        // Add padding
+        let padding = Vec3::splat(1.0);
+        bounds.min -= padding;
+        bounds.max += padding;
+
+        println!("Grid bounds: {:?} to {:?}", bounds.min, bounds.max);
+
+        // Create levels (from coarse to fine)
+        let mut coarse_levels = Vec::new();
+        for level in 0..(GRID_LEVELS - 1) {
+            let cell_size = FINEST_CELL_SIZE * (1 << (GRID_LEVELS - 1 - level)) as f32;
+            coarse_levels.push(CoarseGridLevel::new(&bounds, cell_size));
+            println!("Coarse level {}: {}x{}x{} cells (size: {})",
+                level,
+                coarse_levels[level].grid_size[0],
+                coarse_levels[level].grid_size[1],
+                coarse_levels[level].grid_size[2],
+                cell_size);
+        }
+
+        let fine_level = FineGridLevel::new(&bounds, FINEST_CELL_SIZE);
+        println!("Fine level: {}x{}x{} cells (size: {})",
+            fine_level.grid_size[0],
+            fine_level.grid_size[1],
+            fine_level.grid_size[2],
+            FINEST_CELL_SIZE);
+
+        let mut grid = Self {
+            bounds,
+            coarse_levels,
+            fine_level,
+        };
+
+        // Assign objects to grid
+        for (obj_id, obj) in objects.iter().enumerate() {
+            grid.assign_object(obj, obj_id as u32);
+        }
+
+        // Print statistics
+        let total_coarse_cells: usize = grid.coarse_levels.iter()
+            .map(|level| level.counts.len())
+            .sum();
+        let occupied_fine_cells = grid.fine_level.cells.iter()
+            .filter(|cell| !cell.is_empty())
+            .count();
+
+        println!("Grid stats:");
+        println!("  Coarse cells total: {}", total_coarse_cells);
+        println!("  Fine cells occupied: {}/{}",
+            occupied_fine_cells,
+            grid.fine_level.cells.len());
+
+        grid
+    }
+
+    fn assign_object(&mut self, obj: &BoxData, obj_id: u32) {
+        let obj_min = Vec3::from_array(obj.min);
+        let obj_max = Vec3::from_array(obj.max);
+        let bounds_min = self.bounds.min;
+
+        // Assign to all coarse levels
+        for level in self.coarse_levels.iter_mut() {
+            let cell_size = level.cell_size;
+            let grid_size = level.grid_size;
+
+            let min_cell = Self::world_to_cell_static(&obj_min, bounds_min, cell_size);
+            let max_cell = Self::world_to_cell_static(&obj_max, bounds_min, cell_size);
+
+            for x in min_cell.x..=max_cell.x {
+                for y in min_cell.y..=max_cell.y {
+                    for z in min_cell.z..=max_cell.z {
+                        let xu = x as usize;
+                        let yu = y as usize;
+                        let zu = z as usize;
+                        if xu < grid_size[0] && yu < grid_size[1] && zu < grid_size[2] {
+                            level.increment_cell(xu, yu, zu);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Assign to fine level
+        let cell_size = self.fine_level.cell_size;
+        let grid_size = self.fine_level.grid_size;
+
+        let min_cell = Self::world_to_cell_static(&obj_min, bounds_min, cell_size);
+        let max_cell = Self::world_to_cell_static(&obj_max, bounds_min, cell_size);
+
+        for x in min_cell.x..=max_cell.x {
+            for y in min_cell.y..=max_cell.y {
+                for z in min_cell.z..=max_cell.z {
+                    let xu = x as usize;
+                    let yu = y as usize;
+                    let zu = z as usize;
+                    if xu < grid_size[0] &&
+                       yu < grid_size[1] &&
+                       zu < grid_size[2] {
+                        self.fine_level.add_object(xu, yu, zu, obj_id);
+                    }
+                }
+            }
+        }
+    }
+
+    fn world_to_cell_static(pos: &Vec3, bounds_min: Vec3, cell_size: f32) -> glam::UVec3 {
+        let rel_pos = *pos - bounds_min;
+        glam::UVec3::new(
+            (rel_pos.x / cell_size).floor().max(0.0) as u32,
+            (rel_pos.y / cell_size).floor().max(0.0) as u32,
+            (rel_pos.z / cell_size).floor().max(0.0) as u32,
+        )
+    }
+
+    /// Flatten grid to GPU-compatible buffers
+    fn to_gpu_buffers(&self) -> (GridMetadata, Vec<u8>, Vec<FineCellData>) {
+        // Create metadata (pad vec3 to vec4 for WGSL alignment)
+        let mut grid_sizes = [[0u32; 4]; GRID_LEVELS];
+        for (i, level) in self.coarse_levels.iter().enumerate() {
+            grid_sizes[i] = [
+                level.grid_size[0] as u32,
+                level.grid_size[1] as u32,
+                level.grid_size[2] as u32,
+                0, // Padding
+            ];
+        }
+        grid_sizes[GRID_LEVELS - 1] = [
+            self.fine_level.grid_size[0] as u32,
+            self.fine_level.grid_size[1] as u32,
+            self.fine_level.grid_size[2] as u32,
+            0, // Padding
+        ];
+
+        let metadata = GridMetadata {
+            bounds_min: self.bounds.min.to_array(),
+            num_levels: GRID_LEVELS as u32,
+            bounds_max: self.bounds.max.to_array(),
+            finest_cell_size: FINEST_CELL_SIZE,
+            grid_sizes,
+        };
+
+        // Flatten coarse level counts
+        let mut all_counts = Vec::new();
+        for level in &self.coarse_levels {
+            all_counts.extend_from_slice(&level.counts);
+        }
+
+        // Flatten fine level cells
+        let fine_cells: Vec<FineCellData> = self.fine_level.cells.iter().map(|cell| {
+            let mut cell_data = FineCellData {
+                object_indices: [0; MAX_OBJECTS_PER_CELL],
+                count: cell.len() as u32,
+                _pad: [0; 3],
+            };
+            for (i, &obj_id) in cell.iter().take(MAX_OBJECTS_PER_CELL).enumerate() {
+                cell_data.object_indices[i] = obj_id;
+            }
+            cell_data
+        }).collect();
+
+        (metadata, all_counts, fine_cells)
+    }
 }
 
 // === Camera System ===
@@ -97,9 +408,9 @@ struct Camera {
 impl Camera {
     fn new() -> Self {
         Self {
-            position: Vec3::new(0.0, 2.0, 5.0),
-            yaw: std::f32::consts::PI,
-            pitch: -0.3,
+            position: Vec3::new(0.0, 8.0, 15.0),  // Higher and further back to see the whole scene
+            yaw: std::f32::consts::PI,  // Look towards negative Z (into the scene)
+            pitch: -0.6,  // Look down at the scene
             movement: MovementState::default(),
         }
     }
@@ -162,14 +473,111 @@ impl Camera {
 
 // === Scene Configuration ===
 
-/// Creates the default scene with boxes
+/// Creates a huge scene to stress test the BVH
 fn create_default_scene() -> Vec<BoxData> {
-    vec![
-        BoxData::new([-1.5, -0.5, -3.0], [-0.5, 0.5, -2.0], [1.0, 0.2, 0.2]),
-        BoxData::new([0.5, -0.5, -4.0], [1.5, 0.5, -3.0], [0.2, 1.0, 0.2]),
-        BoxData::new([-0.5, -0.5, -6.0], [0.5, 0.5, -5.0], [0.2, 0.2, 1.0]),
-        BoxData::new([-10.0, -1.0, -20.0], [10.0, -0.99, 0.0], [0.5, 0.5, 0.5]),
-    ]
+    let mut boxes = vec![
+        // Ground plane
+        BoxData::new([-50.0, -1.0, -50.0], [50.0, -0.99, 50.0], [0.3, 0.3, 0.3]),
+    ];
+
+    // Dense grid of cubes (20x20 = 400 boxes)
+    for x in -10..10 {
+        for z in -10..10 {
+            let fx = x as f32 * 1.5;
+            let fz = z as f32 * 1.5 - 15.0;
+            let size = 0.4;
+
+            let color = [
+                ((x + 10) as f32 / 20.0) * 0.8 + 0.2,
+                ((z + 10) as f32 / 20.0) * 0.8 + 0.2,
+                0.6,
+            ];
+
+            boxes.push(BoxData::new(
+                [fx - size, -0.5, fz - size],
+                [fx + size, 0.5, fz + size],
+                color,
+            ));
+        }
+    }
+
+    // Floating structures above (15x15x3 = 675 boxes)
+    for x in -7..8 {
+        for z in -7..8 {
+            for y in 0..3 {
+                let fx = x as f32 * 2.0;
+                let fy = y as f32 * 2.0 + 2.0;
+                let fz = z as f32 * 2.0 - 10.0;
+                let size = 0.35;
+
+                let color = [
+                    ((x + 7) as f32 / 15.0) * 0.7 + 0.3,
+                    ((y) as f32 / 3.0) * 0.5 + 0.4,
+                    ((z + 7) as f32 / 15.0) * 0.7 + 0.3,
+                ];
+
+                boxes.push(BoxData::new(
+                    [fx - size, fy - size, fz - size],
+                    [fx + size, fy + size, fz + size],
+                    color,
+                ));
+            }
+        }
+    }
+
+    // Scattered random boxes (200 boxes)
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hash, Hasher};
+
+    let hasher_builder = RandomState::new();
+    for i in 0..200 {
+        let mut hasher = hasher_builder.build_hasher();
+        i.hash(&mut hasher);
+        let hash = hasher.finish();
+
+        let x = ((hash % 100) as f32 / 100.0) * 40.0 - 20.0;
+        let y = (((hash >> 8) % 100) as f32 / 100.0) * 8.0 - 2.0;
+        let z = (((hash >> 16) % 100) as f32 / 100.0) * 40.0 - 30.0;
+        let size = (((hash >> 24) % 50) as f32 / 100.0) * 0.4 + 0.2;
+
+        let color = [
+            ((hash % 100) as f32 / 100.0) * 0.8 + 0.2,
+            (((hash >> 8) % 100) as f32 / 100.0) * 0.8 + 0.2,
+            (((hash >> 16) % 100) as f32 / 100.0) * 0.8 + 0.2,
+        ];
+
+        boxes.push(BoxData::new(
+            [x - size, y - size, z - size],
+            [x + size, y + size, z + size],
+            color,
+        ));
+    }
+
+    // Tall pillars on the sides (8x10 = 80 boxes)
+    for side in [-15.0, 15.0] {
+        for z in -5..5 {
+            for y in 0..10 {
+                let fz = z as f32 * 2.0 - 10.0;
+                let fy = y as f32 * 1.5;
+                let size = 0.5;
+
+                let color = if side < 0.0 {
+                    [0.8, 0.3, 0.3]
+                } else {
+                    [0.3, 0.3, 0.8]
+                };
+
+                boxes.push(BoxData::new(
+                    [side - size, fy - size, fz - size],
+                    [side + size, fy + size, fz + size],
+                    color,
+                ));
+            }
+        }
+    }
+
+    println!("Scene created: {} boxes", boxes.len());
+    boxes
 }
 
 // === Rendering System ===
@@ -188,6 +596,7 @@ struct RayTracer {
     egui_renderer: egui_wgpu::Renderer,
     egui_state: egui_winit::State,
     egui_ctx: egui::Context,
+    num_boxes: usize,
 }
 
 impl RayTracer {
@@ -206,7 +615,32 @@ impl RayTracer {
         let surface_config = Self::create_surface_config(&surface, &adapter, size);
         surface.configure(&device, &surface_config);
 
+        // Build hierarchical grid from scene
         let boxes = create_default_scene();
+        let num_boxes = boxes.len();
+
+        println!("Building Hierarchical Grid...");
+        let grid = HierarchicalGrid::build(&boxes);
+        let (metadata, coarse_counts, fine_cells) = grid.to_gpu_buffers();
+
+        let grid_meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Grid Metadata"),
+            contents: bytemuck::cast_slice(&[metadata]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let coarse_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Coarse Counts"),
+            contents: &coarse_counts,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let fine_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fine Cells"),
+            contents: bytemuck::cast_slice(&fine_cells),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
         let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Box Buffer"),
             contents: bytemuck::cast_slice(&boxes),
@@ -219,6 +653,9 @@ impl RayTracer {
         let (compute_pipeline, compute_bind_group) = Self::create_compute_pipeline(
             &device,
             &camera_buffer,
+            &grid_meta_buffer,
+            &coarse_buffer,
+            &fine_buffer,
             &box_buffer,
             &output_texture_view,
         );
@@ -242,7 +679,7 @@ impl RayTracer {
             egui_wgpu::RendererOptions::default(),
         );
 
-        println!("Ray tracer initialized: {} boxes", boxes.len());
+        println!("Ray tracer initialized: {} boxes", num_boxes);
 
         Ok(Self {
             device,
@@ -257,6 +694,7 @@ impl RayTracer {
             egui_renderer,
             egui_state,
             egui_ctx,
+            num_boxes,
         })
     }
 
@@ -350,16 +788,20 @@ impl RayTracer {
     fn create_compute_pipeline(
         device: &wgpu::Device,
         camera_buffer: &wgpu::Buffer,
+        grid_meta_buffer: &wgpu::Buffer,
+        coarse_buffer: &wgpu::Buffer,
+        fine_buffer: &wgpu::Buffer,
         box_buffer: &wgpu::Buffer,
         output_texture_view: &wgpu::TextureView,
     ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("raytracer.wgsl").into()),
+            label: Some("Grid Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("raytracer_grid.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
+                // Binding 0: Camera
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -370,8 +812,20 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 1: Grid Metadata
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 2: Coarse level counts
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
@@ -380,8 +834,31 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 3: Fine level cells
                 wgpu::BindGroupLayoutEntry {
-                    binding: 2,
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 4: Boxes
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 5: Output texture
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::StorageTexture {
                         access: wgpu::StorageTextureAccess::WriteOnly,
@@ -391,7 +868,7 @@ impl RayTracer {
                     count: None,
                 },
             ],
-            label: Some("compute_bind_group_layout"),
+            label: Some("grid_bind_group_layout"),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -403,24 +880,36 @@ impl RayTracer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: box_buffer.as_entire_binding(),
+                    resource: grid_meta_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
+                    resource: coarse_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: fine_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: box_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
                     resource: wgpu::BindingResource::TextureView(output_texture_view),
                 },
             ],
-            label: Some("compute_bind_group"),
+            label: Some("grid_bind_group"),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Compute Pipeline Layout"),
+            label: Some("Grid Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("Compute Pipeline"),
+            label: Some("Grid Pipeline"),
             layout: Some(&pipeline_layout),
             module: &shader,
             entry_point: Some("main"),

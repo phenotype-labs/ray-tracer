@@ -20,6 +20,13 @@ struct Box {
     _pad3: f32,
 };
 
+struct BVHNode {
+    bounds_min: vec3<f32>,
+    left_first: u32,    // For leaf: first object index, For internal: left child index
+    bounds_max: vec3<f32>,
+    count_right: u32,   // For leaf: object count, For internal: right child index
+};
+
 struct Ray {
     origin: vec3<f32>,
     direction: vec3<f32>,
@@ -37,19 +44,18 @@ struct HitInfo {
 var<uniform> camera: Camera;
 
 @group(0) @binding(1)
-var<storage, read> boxes: array<Box>;
+var<storage, read> bvh_nodes: array<BVHNode>;
 
 @group(0) @binding(2)
+var<storage, read> boxes: array<Box>;
+
+@group(0) @binding(3)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
 
-// Ray-box intersection
-fn intersect_box(ray: Ray, box: Box) -> HitInfo {
-    var hit: HitInfo;
-    hit.hit = false;
-    hit.distance = 1e10;
-
-    let t_min = (box.min - ray.origin) / ray.direction;
-    let t_max = (box.max - ray.origin) / ray.direction;
+// Ray-AABB intersection (returns distance, or negative if no hit)
+fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
+    let t_min = (box_min - ray.origin) / ray.direction;
+    let t_max = (box_max - ray.origin) / ray.direction;
 
     let t1 = min(t_min, t_max);
     let t2 = max(t_min, t_max);
@@ -58,18 +64,31 @@ fn intersect_box(ray: Ray, box: Box) -> HitInfo {
     let t_far = min(min(t2.x, t2.y), t2.z);
 
     if t_near > t_far || t_far < 0.0 {
+        return -1.0;
+    }
+
+    return select(t_near, t_far, t_near < 0.0);
+}
+
+// Ray-box intersection (detailed hit info)
+fn intersect_box(ray: Ray, box: Box) -> HitInfo {
+    var hit: HitInfo;
+    hit.hit = false;
+    hit.distance = 1e10;
+
+    let t = intersect_aabb(ray, box.min, box.max);
+    if t < 0.0 {
         return hit;
     }
 
     hit.hit = true;
-    hit.distance = select(t_near, t_far, t_near < 0.0);
-    hit.position = ray.origin + ray.direction * hit.distance;
+    hit.distance = t;
+    hit.position = ray.origin + ray.direction * t;
 
     // Calculate normal
     let center = (box.min + box.max) * 0.5;
     let p = hit.position - center;
     let d = abs(p) - (box.max - box.min) * 0.5;
-    let bias = 0.001;
 
     if d.x > d.y && d.x > d.z {
         hit.normal = vec3<f32>(sign(p.x), 0.0, 0.0);
@@ -84,19 +103,54 @@ fn intersect_box(ray: Ray, box: Box) -> HitInfo {
     return hit;
 }
 
-// Trace ray through scene
+// Trace ray through BVH
 fn trace_ray(ray: Ray) -> vec3<f32> {
     var closest_hit: HitInfo;
     closest_hit.hit = false;
     closest_hit.distance = 1e10;
 
-    let num_boxes = arrayLength(&boxes);
+    // Simple iterative BVH traversal stack
+    const STACK_SIZE: u32 = 32u;
+    var stack: array<u32, 32>;
+    var stack_size = 1u;
+    stack[0] = 0u; // Start with root node
 
-    // Check all boxes
-    for (var i = 0u; i < num_boxes; i++) {
-        let hit = intersect_box(ray, boxes[i]);
-        if hit.hit && hit.distance < closest_hit.distance {
-            closest_hit = hit;
+    while stack_size > 0u && stack_size < STACK_SIZE {
+        // Pop from stack
+        stack_size--;
+        let node_idx = stack[stack_size];
+        let node = bvh_nodes[node_idx];
+
+        // Test ray against node bounds
+        let t = intersect_aabb(ray, node.bounds_min, node.bounds_max);
+        if t < 0.0 || t > closest_hit.distance {
+            continue; // Skip this node
+        }
+
+        // Check if leaf: count_right < 100 indicates object count (leaf), otherwise it's a child index
+        let is_leaf = node.count_right < 100u;
+
+        if is_leaf {
+            // Leaf node - test primitives
+            for (var i = 0u; i < node.count_right; i++) {
+                let box_idx = node.left_first + i;
+                let hit = intersect_box(ray, boxes[box_idx]);
+                if hit.hit && hit.distance < closest_hit.distance {
+                    closest_hit = hit;
+                }
+            }
+        } else {
+            // Internal node - push children to stack
+            let left_idx = node.left_first;
+            let right_idx = node.count_right;
+
+            // Push right child first (so left is processed first - stack order)
+            if stack_size + 2u < STACK_SIZE {
+                stack[stack_size] = right_idx;
+                stack_size++;
+                stack[stack_size] = left_idx;
+                stack_size++;
+            }
         }
     }
 
