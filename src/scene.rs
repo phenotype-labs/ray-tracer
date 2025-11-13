@@ -1,14 +1,12 @@
 use glam::Vec3;
 use crate::types::BoxData;
 
-/// Creates a huge scene to stress test the BVH
 pub fn create_default_scene() -> Vec<BoxData> {
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hash, Hasher};
 
     let ground = BoxData::new([-50.0, -1.0, -50.0], [50.0, -0.99, 50.0], [0.3, 0.3, 0.3]);
 
-    // Dense grid of cubes (20x20 = 400 boxes)
     let dense_grid = (-10..10).flat_map(|x| {
         (-10..10).map(move |z| {
             let fx = x as f32 * 1.5;
@@ -27,7 +25,6 @@ pub fn create_default_scene() -> Vec<BoxData> {
         })
     });
 
-    // Floating structures above (15x15x3 = 675 boxes)
     let floating_structures = (-7..8).flat_map(|x| {
         (-7..8).flat_map(move |z| {
             (0..3).map(move |y| {
@@ -49,7 +46,6 @@ pub fn create_default_scene() -> Vec<BoxData> {
         })
     });
 
-    // Scattered random boxes (200 boxes)
     let hasher_builder = RandomState::new();
     let scattered_boxes = (0..200).map(|i| {
         let mut hasher = hasher_builder.build_hasher();
@@ -72,7 +68,6 @@ pub fn create_default_scene() -> Vec<BoxData> {
         )
     });
 
-    // Tall pillars on the sides (8x10 = 80 boxes)
     let pillars = [-15.0, 15.0].iter().flat_map(|&side| {
         (-5..5).flat_map(move |z| {
             (0..10).map(move |y| {
@@ -93,25 +88,24 @@ pub fn create_default_scene() -> Vec<BoxData> {
         })
     });
 
-    // Moving boxes - VERY LARGE and BRIGHT to be impossible to miss
     let moving_boxes = [
         BoxData::create_moving_box(
             Vec3::splat(4.0),
             Vec3::new(0.0, 2.0, -15.0),
             Vec3::new(0.0, 12.0, -15.0),
-            [1.0, 0.1, 0.1], // Bright red
+            [1.0, 0.1, 0.1],
         ),
         BoxData::create_moving_box(
             Vec3::splat(3.0),
             Vec3::new(-8.0, 3.0, -12.0),
             Vec3::new(-8.0, 10.0, -12.0),
-            [0.1, 1.0, 0.1], // Bright green
+            [0.1, 1.0, 0.1],
         ),
         BoxData::create_moving_box(
             Vec3::splat(3.0),
             Vec3::new(8.0, 3.0, -12.0),
             Vec3::new(8.0, 10.0, -12.0),
-            [0.1, 0.1, 1.0], // Bright blue
+            [0.1, 0.1, 1.0],
         ),
     ];
 

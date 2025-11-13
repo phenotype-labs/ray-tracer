@@ -6,7 +6,6 @@ use crate::types::CameraUniform;
 pub const CAMERA_SPEED: f32 = 0.1;
 pub const CAMERA_ROTATION_SPEED: f32 = 0.05;
 
-/// Movement direction flags
 #[derive(Default, Clone, Copy)]
 pub struct MovementState {
     pub forward: bool,
@@ -41,7 +40,6 @@ impl MovementState {
     }
 }
 
-/// Camera with first-person controls
 pub struct Camera {
     pub position: Vec3,
     pub yaw: f32,

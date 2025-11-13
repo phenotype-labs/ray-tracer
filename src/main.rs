@@ -30,7 +30,7 @@ struct App {
     frame_count: u32,
     fps: f32,
     fps_update_timer: f32,
-    time: f32, // Animation time for moving objects
+    time: f32,
     start_time: Instant,
 }
 
@@ -102,10 +102,9 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        // Let egui handle the event first
         if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
             if raytracer.handle_event(window, &event) {
-                return; // egui consumed the event
+                return;
             }
         }
 

@@ -9,7 +9,6 @@ pub const WORKGROUP_SIZE: u32 = 8;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// GPU-accelerated ray tracer using compute shaders
 pub struct RayTracer {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -42,7 +41,6 @@ impl RayTracer {
         let surface_config = Self::create_surface_config(&surface, &adapter, size);
         surface.configure(&device, &surface_config);
 
-        // Build hierarchical grid from scene
         let boxes = create_default_scene();
         let num_boxes = boxes.len();
 
@@ -90,7 +88,6 @@ impl RayTracer {
         let (render_pipeline, render_bind_group) =
             Self::create_render_pipeline(&device, &output_texture_view, surface_config.format);
 
-        // Initialize egui
         let egui_ctx = egui::Context::default();
         let egui_state = egui_winit::State::new(
             egui_ctx.clone(),
@@ -180,7 +177,7 @@ impl RayTracer {
 
     fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
-        let camera_uniform = camera.to_uniform(0.0); // Initialize with time = 0.0
+        let camera_uniform = camera.to_uniform(0.0);
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -228,7 +225,6 @@ impl RayTracer {
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
-                // Binding 0: Camera
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -239,7 +235,6 @@ impl RayTracer {
                     },
                     count: None,
                 },
-                // Binding 1: Grid Metadata
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -250,7 +245,6 @@ impl RayTracer {
                     },
                     count: None,
                 },
-                // Binding 2: Coarse level counts
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -261,7 +255,6 @@ impl RayTracer {
                     },
                     count: None,
                 },
-                // Binding 3: Fine level cells
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -272,7 +265,6 @@ impl RayTracer {
                     },
                     count: None,
                 },
-                // Binding 4: Boxes
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -283,7 +275,6 @@ impl RayTracer {
                     },
                     count: None,
                 },
-                // Binding 5: Output texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -476,7 +467,6 @@ impl RayTracer {
                 label: Some("Encoder"),
             });
 
-        // Compute pass - ray tracing
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
@@ -490,7 +480,6 @@ impl RayTracer {
             compute_pass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, 1);
         }
 
-        // Render pass - display ray traced image
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Display Pass"),
@@ -512,7 +501,6 @@ impl RayTracer {
             render_pass.draw(0..6, 0..1);
         }
 
-        // egui pass - UI overlay
         let raw_input = self.egui_state.take_egui_input(window);
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::Window::new("FPS")
@@ -550,7 +538,6 @@ impl RayTracer {
             pixels_per_point: window.scale_factor() as f32,
         };
 
-        // Update egui buffers
         self.egui_renderer.update_buffers(
             &self.device,
             &self.queue,
@@ -559,7 +546,6 @@ impl RayTracer {
             &screen_descriptor,
         );
 
-        // Render egui - using scoped render pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("egui Pass"),
@@ -577,9 +563,6 @@ impl RayTracer {
                 timestamp_writes: None,
             });
 
-            // SAFETY: The render pass lifetime is actually tied to the encoder,
-            // but egui-wgpu requires 'static. This is safe because we drop the
-            // render pass before using the encoder again.
             let render_pass_static = unsafe {
                 std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(
                     &mut render_pass,
