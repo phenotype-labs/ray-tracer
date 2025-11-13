@@ -14,6 +14,7 @@ use winit::{
 
 const WORKGROUP_SIZE: u32 = 8;
 const CAMERA_SPEED: f32 = 0.1;
+const CAMERA_ROTATION_SPEED: f32 = 0.05;
 const FPS_UPDATE_INTERVAL: f32 = 1.0;
 const INITIAL_WINDOW_WIDTH: u32 = 800;
 const INITIAL_WINDOW_HEIGHT: u32 = 600;
@@ -35,7 +36,7 @@ struct CameraUniform {
     right: [f32; 3],
     _pad3: f32,
     up: [f32; 3],
-    _pad4: f32,
+    time: f32, // Animation time for moving objects
 }
 
 /// Box primitive data for GPU
@@ -43,22 +44,61 @@ struct CameraUniform {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct BoxData {
     min: [f32; 3],
-    _pad1: f32,
+    is_moving: f32, // 1.0 if moving, 0.0 if static
     max: [f32; 3],
     _pad2: f32,
     color: [f32; 3],
     _pad3: f32,
+    center0: [f32; 3], // Start position for moving objects
+    _pad4: f32,
+    center1: [f32; 3], // End position for moving objects
+    _pad5: f32,
+    half_size: [f32; 3], // Actual box half-dimensions
+    _pad6: f32,
 }
 
 impl BoxData {
     const fn new(min: [f32; 3], max: [f32; 3], color: [f32; 3]) -> Self {
+        let center = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        let half_size = [
+            (max[0] - min[0]) * 0.5,
+            (max[1] - min[1]) * 0.5,
+            (max[2] - min[2]) * 0.5,
+        ];
         Self {
             min,
-            _pad1: 0.0,
+            is_moving: 0.0, // Static object
             max,
             _pad2: 0.0,
             color,
             _pad3: 0.0,
+            center0: center,
+            _pad4: 0.0,
+            center1: center, // Same as center0 for static objects
+            _pad5: 0.0,
+            half_size,
+            _pad6: 0.0,
+        }
+    }
+
+    fn new_moving(min: [f32; 3], max: [f32; 3], color: [f32; 3], center0: [f32; 3], center1: [f32; 3], half_size: [f32; 3]) -> Self {
+        Self {
+            min,
+            is_moving: 1.0, // Moving object
+            max,
+            _pad2: 0.0,
+            color,
+            _pad3: 0.0,
+            center0,
+            _pad4: 0.0,
+            center1,
+            _pad5: 0.0,
+            half_size,
+            _pad6: 0.0,
         }
     }
 
@@ -67,6 +107,45 @@ impl BoxData {
             min: Vec3::from_array(self.min),
             max: Vec3::from_array(self.max),
         }
+    }
+
+    fn is_moving(&self) -> bool {
+        let c0 = Vec3::from_array(self.center0);
+        let c1 = Vec3::from_array(self.center1);
+        c0.distance(c1) > 0.001
+    }
+
+    /// Create a moving box with proper AABB that encompasses the entire motion
+    fn create_moving_box(
+        size: Vec3,
+        center0: Vec3,
+        center1: Vec3,
+        color: [f32; 3],
+    ) -> Self {
+        let half_size = size * 0.5;
+
+        // Calculate AABB that encompasses both positions
+        let min0 = center0 - half_size;
+        let max0 = center0 + half_size;
+        let min1 = center1 - half_size;
+        let max1 = center1 + half_size;
+
+        let aabb_min = min0.min(min1);
+        let aabb_max = max0.max(max1);
+
+        // Add extra padding to ensure grid cells contain the box at all positions
+        let padding = Vec3::splat(0.5);
+        let padded_min = aabb_min - padding;
+        let padded_max = aabb_max + padding;
+
+        Self::new_moving(
+            padded_min.to_array(),
+            padded_max.to_array(),
+            color,
+            center0.to_array(),
+            center1.to_array(),
+            half_size.to_array(),
+        )
     }
 }
 
@@ -385,6 +464,8 @@ struct MovementState {
     right: bool,
     up: bool,
     down: bool,
+    rotate_left: bool,
+    rotate_right: bool,
 }
 
 impl MovementState {
@@ -440,9 +521,13 @@ impl Camera {
         let up_vec = Vec3::Y * up_dir * CAMERA_SPEED;
 
         self.position += forward_vec + right_vec + up_vec;
+
+        // Handle camera rotation
+        let rotate_delta = (self.movement.rotate_right as i32 - self.movement.rotate_left as i32) as f32;
+        self.yaw += rotate_delta * CAMERA_ROTATION_SPEED;
     }
 
-    fn to_uniform(&self) -> CameraUniform {
+    fn to_uniform(&self, time: f32) -> CameraUniform {
         CameraUniform {
             position: self.position.to_array(),
             _pad1: 0.0,
@@ -451,7 +536,7 @@ impl Camera {
             right: self.right().to_array(),
             _pad3: 0.0,
             up: self.up().to_array(),
-            _pad4: 0.0,
+            time,
         }
     }
 
@@ -465,6 +550,8 @@ impl Camera {
                 KeyCode::KeyD => self.movement.right = is_pressed,
                 KeyCode::Space => self.movement.up = is_pressed,
                 KeyCode::ShiftLeft => self.movement.down = is_pressed,
+                KeyCode::KeyQ => self.movement.rotate_left = is_pressed,
+                KeyCode::KeyE => self.movement.rotate_right = is_pressed,
                 _ => {}
             }
         }
@@ -576,7 +663,38 @@ fn create_default_scene() -> Vec<BoxData> {
         }
     }
 
-    println!("Scene created: {} boxes", boxes.len());
+    // Moving boxes - VERY LARGE and BRIGHT to be impossible to miss
+    // Camera is at (0, 8, 15) looking down at negative Z
+
+    // Huge central moving box right in front of camera view
+    boxes.push(BoxData::create_moving_box(
+        Vec3::splat(4.0), // HUGE - 4 units
+        Vec3::new(0.0, 2.0, -15.0),  // Low position
+        Vec3::new(0.0, 12.0, -15.0), // High position - dramatic movement
+        [1.0, 0.1, 0.1], // Bright red
+    ));
+
+    // Two more giant boxes on the sides
+    boxes.push(BoxData::create_moving_box(
+        Vec3::splat(3.0),
+        Vec3::new(-8.0, 3.0, -12.0),
+        Vec3::new(-8.0, 10.0, -12.0),
+        [0.1, 1.0, 0.1], // Bright green
+    ));
+
+    boxes.push(BoxData::create_moving_box(
+        Vec3::splat(3.0),
+        Vec3::new(8.0, 3.0, -12.0),
+        Vec3::new(8.0, 10.0, -12.0),
+        [0.1, 0.1, 1.0], // Bright blue
+    ));
+
+    println!("Moving boxes added at:");
+    println!("  Center: z=-15, moving y: 2->12");
+    println!("  Left: x=-8, z=-12, moving y: 3->10");
+    println!("  Right: x=8, z=-12, moving y: 3->10");
+
+    println!("Scene created: {} boxes (3 moving)", boxes.len());
     boxes
 }
 
@@ -753,7 +871,7 @@ impl RayTracer {
 
     fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
-        let camera_uniform = camera.to_uniform();
+        let camera_uniform = camera.to_uniform(0.0); // Initialize with time = 0.0
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -1029,8 +1147,9 @@ impl RayTracer {
         camera: &Camera,
         window: &Window,
         fps: f32,
+        time: f32,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
-        let camera_uniform = camera.to_uniform();
+        let camera_uniform = camera.to_uniform(time);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -1186,18 +1305,23 @@ struct App {
     frame_count: u32,
     fps: f32,
     fps_update_timer: f32,
+    time: f32, // Animation time for moving objects
+    start_time: Instant,
 }
 
 impl App {
     fn new() -> Self {
+        let now = Instant::now();
         Self {
             window: None,
             raytracer: None,
             camera: Camera::new(),
-            last_frame_time: Instant::now(),
+            last_frame_time: now,
             frame_count: 0,
             fps: 0.0,
             fps_update_timer: 0.0,
+            time: 0.0,
+            start_time: now,
         }
     }
 
@@ -1207,7 +1331,7 @@ impl App {
 
         if self.fps_update_timer >= FPS_UPDATE_INTERVAL {
             self.fps = self.frame_count as f32 / self.fps_update_timer;
-            println!("FPS: {:.1}", self.fps);
+            println!("FPS: {:.1} | Time: {:.2}s", self.fps, self.time);
             self.frame_count = 0;
             self.fps_update_timer = 0.0;
         }
@@ -1276,12 +1400,13 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                 self.last_frame_time = now;
+                self.time = now.duration_since(self.start_time).as_secs_f32();
 
                 self.update_fps(delta);
                 self.camera.update();
 
                 if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
-                    if let Err(e) = raytracer.render(&self.camera, window, self.fps) {
+                    if let Err(e) = raytracer.render(&self.camera, window, self.fps, self.time) {
                         eprintln!("Render error: {}", e);
                     }
                 }
@@ -1303,7 +1428,7 @@ fn main() -> Result<()> {
     let event_loop = EventLoop::new()?;
     let mut app = App::new();
 
-    println!("Ray Tracer - Controls: WASD, Space/Shift, Escape to quit");
+    println!("Ray Tracer - Controls: WASD (move), Q/E (rotate), Space/Shift (up/down), Escape to quit");
     event_loop.run_app(&mut app)?;
 
     Ok(())
