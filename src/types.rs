@@ -11,6 +11,9 @@ pub struct CameraUniform {
     pub _pad3: f32,
     pub up: [f32; 3],
     pub time: f32,
+    pub lod_factor: f32,
+    pub min_pixel_size: f32,
+    pub _pad4: [f32; 2],
 }
 
 #[repr(C)]

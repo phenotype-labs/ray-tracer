@@ -1,9 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
-use crate::scene::create_default_scene;
+use crate::scene::{create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene};
 
 pub const WORKGROUP_SIZE: u32 = 8;
 
@@ -23,6 +23,8 @@ pub struct RayTracer {
     egui_state: egui_winit::State,
     egui_ctx: egui::Context,
     num_boxes: usize,
+    current_scene: Arc<Mutex<String>>,
+    needs_reload: Arc<Mutex<bool>>,
 }
 
 impl RayTracer {
@@ -41,7 +43,15 @@ impl RayTracer {
         let surface_config = Self::create_surface_config(&surface, &adapter, size);
         surface.configure(&device, &surface_config);
 
-        let boxes = create_default_scene();
+        let scene_name = std::env::var("SCENE").unwrap_or_else(|_| "fractal".to_string());
+        println!("Loading scene: {}", scene_name);
+
+        let boxes = match scene_name.as_str() {
+            "walls" => create_walls_scene(),
+            "tunnel" => create_tunnel_scene(),
+            "default" => create_default_scene(),
+            _ => create_fractal_scene(),
+        };
         let num_boxes = boxes.len();
 
         println!("Building Hierarchical Grid...");
@@ -119,6 +129,8 @@ impl RayTracer {
             egui_state,
             egui_ctx,
             num_boxes,
+            current_scene: Arc::new(Mutex::new(scene_name)),
+            needs_reload: Arc::new(Mutex::new(false)),
         })
     }
 
@@ -177,7 +189,8 @@ impl RayTracer {
 
     fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
-        let camera_uniform = camera.to_uniform(0.0);
+        let fov = 0.785398;
+        let camera_uniform = camera.to_uniform(0.0, 800.0, fov);
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -449,7 +462,8 @@ impl RayTracer {
         fps: f32,
         time: f32,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
-        let camera_uniform = camera.to_uniform(time);
+        let fov = 0.785398;
+        let camera_uniform = camera.to_uniform(time, self.size.height as f32, fov);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -502,6 +516,9 @@ impl RayTracer {
         }
 
         let raw_input = self.egui_state.take_egui_input(window);
+        let current_scene = self.current_scene.clone();
+        let needs_reload = self.needs_reload.clone();
+
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::Window::new("FPS")
                 .title_bar(false)
@@ -519,6 +536,41 @@ impl RayTracer {
                             .size(12.0)
                             .color(egui::Color32::GRAY),
                     );
+                });
+
+            egui::Window::new("Scenes")
+                .title_bar(true)
+                .resizable(false)
+                .fixed_pos(egui::pos2(10.0, 100.0))
+                .show(ctx, |ui| {
+                    ui.vertical(|ui| {
+                        let mut scene = current_scene.lock().unwrap();
+                        let mut changed = false;
+
+                        if ui.button("Fractal Scene").clicked() {
+                            *scene = "fractal".to_string();
+                            changed = true;
+                        }
+                        if ui.button("Walls Scene").clicked() {
+                            *scene = "walls".to_string();
+                            changed = true;
+                        }
+                        if ui.button("Tunnel Scene").clicked() {
+                            *scene = "tunnel".to_string();
+                            changed = true;
+                        }
+                        if ui.button("Default Scene").clicked() {
+                            *scene = "default".to_string();
+                            changed = true;
+                        }
+
+                        if changed {
+                            *needs_reload.lock().unwrap() = true;
+                        }
+
+                        ui.separator();
+                        ui.label(format!("Current: {}", *scene));
+                    });
                 });
         });
 
@@ -584,5 +636,13 @@ impl RayTracer {
 
     pub fn handle_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
         self.egui_state.on_window_event(window, event).consumed
+    }
+
+    pub fn needs_reload(&self) -> bool {
+        *self.needs_reload.lock().unwrap()
+    }
+
+    pub fn get_current_scene(&self) -> String {
+        self.current_scene.lock().unwrap().clone()
     }
 }

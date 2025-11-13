@@ -49,10 +49,18 @@ pub struct Camera {
 
 impl Camera {
     pub fn new() -> Self {
+        let scene_name = std::env::var("SCENE").unwrap_or_else(|_| "fractal".to_string());
+
+        let (position, yaw, pitch) = match scene_name.as_str() {
+            "walls" => (Vec3::new(0.0, 5.0, 0.0), 0.0, 0.0),
+            "tunnel" => (Vec3::new(0.0, 0.0, 20.0), std::f32::consts::PI, 0.0),
+            _ => (Vec3::new(0.0, 8.0, 15.0), std::f32::consts::PI, -0.6),
+        };
+
         Self {
-            position: Vec3::new(0.0, 8.0, 15.0),  // Higher and further back to see the whole scene
-            yaw: std::f32::consts::PI,  // Look towards negative Z (into the scene)
-            pitch: -0.6,  // Look down at the scene
+            position,
+            yaw,
+            pitch,
             movement: MovementState::default(),
         }
     }
@@ -85,7 +93,10 @@ impl Camera {
         self.yaw += self.movement.rotation_velocity() * CAMERA_ROTATION_SPEED;
     }
 
-    pub fn to_uniform(&self, time: f32) -> CameraUniform {
+    pub fn to_uniform(&self, time: f32, screen_height: f32, fov: f32) -> CameraUniform {
+        let lod_factor = screen_height / (2.0 * (fov / 2.0).tan());
+        let min_pixel_size = 2.0;
+
         CameraUniform {
             position: self.position.to_array(),
             _pad1: 0.0,
@@ -95,6 +106,9 @@ impl Camera {
             _pad3: 0.0,
             up: self.up().to_array(),
             time,
+            lod_factor,
+            min_pixel_size,
+            _pad4: [0.0, 0.0],
         }
     }
 

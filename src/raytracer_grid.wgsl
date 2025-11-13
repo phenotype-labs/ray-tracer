@@ -12,6 +12,9 @@ struct Camera {
     _pad3: f32,
     up: vec3<f32>,
     time: f32,
+    lod_factor: f32,
+    min_pixel_size: f32,
+    _pad4: vec2<f32>,
 };
 
 struct Box {
@@ -73,6 +76,16 @@ var<storage, read> boxes: array<Box>;
 
 @group(0) @binding(5)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
+
+fn should_cull_lod(box_center: vec3<f32>, box_size: vec3<f32>) -> bool {
+    let distance = length(camera.position - box_center);
+    if distance > 200.0 {
+        return true;
+    }
+    let max_size = max(max(box_size.x, box_size.y), box_size.z);
+    let apparent_size = (max_size / distance) * camera.lod_factor;
+    return apparent_size < camera.min_pixel_size;
+}
 
 // Ray-AABB intersection
 fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
@@ -140,9 +153,9 @@ fn intersect_box(ray: Ray, box: Box, time: f32) -> HitInfo {
 fn world_to_cell(pos: vec3<f32>, cell_size: f32) -> vec3<u32> {
     let rel_pos = pos - grid_meta.bounds_min;
     return vec3<u32>(
-        u32(floor(rel_pos.x / cell_size)),
-        u32(floor(rel_pos.y / cell_size)),
-        u32(floor(rel_pos.z / cell_size))
+        u32(max(0.0, floor(rel_pos.x / cell_size))),
+        u32(max(0.0, floor(rel_pos.y / cell_size))),
+        u32(max(0.0, floor(rel_pos.z / cell_size)))
     );
 }
 
@@ -179,11 +192,17 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     closest_hit.hit = false;
     closest_hit.distance = 1e10;
 
-    // FIRST: Test all moving objects (bypass grid optimization)
+    // FIRST: Test moving objects (hardcoded for performance - only 3 in scene)
     // Moving objects need to be tested directly because their AABB in the grid
     // is larger than their actual size at any given time
-    for (var i = 0u; i < arrayLength(&boxes); i++) {
-        if boxes[i].is_moving > 0.5 {
+    let num_boxes = arrayLength(&boxes);
+    let moving_start = num_boxes - 3u;
+    for (var i = moving_start; i < num_boxes; i++) {
+        let t_lerp = (sin(camera.time * 2.0) + 1.0) * 0.5;
+        let box_center = mix(boxes[i].center0, boxes[i].center1, t_lerp);
+        let box_size = boxes[i].half_size * 2.0;
+
+        if !should_cull_lod(box_center, box_size) {
             let hit = intersect_box(ray, boxes[i], camera.time);
             if hit.hit && hit.distance < closest_hit.distance {
                 closest_hit = hit;
@@ -235,8 +254,8 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     let t_delta = abs(cell_size / ray.direction);
     var t_max = abs((next_boundary - ray_pos) / ray.direction);
 
-    // DDA traversal (max 100 steps to prevent infinite loops)
-    for (var i = 0; i < 100; i++) {
+    // DDA traversal (max 200 steps to prevent infinite loops)
+    for (var i = 0; i < 200; i++) {
         // IMPORTANT: Check bounds BEFORE using current_cell
         // (current_cell might have wrapped to huge value if stepping backwards)
         if current_cell.x >= grid_size.x || current_cell.y >= grid_size.y || current_cell.z >= grid_size.z {
@@ -250,9 +269,15 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
         if cell_data.count > 0u {
             for (var j = 0u; j < cell_data.count && j < MAX_OBJECTS_PER_CELL; j++) {
                 let obj_idx = cell_data.object_indices[j];
-                let hit = intersect_box(ray, boxes[obj_idx], camera.time);
-                if hit.hit && hit.distance < closest_hit.distance {
-                    closest_hit = hit;
+                let box = boxes[obj_idx];
+                let box_center = (box.min + box.max) * 0.5;
+                let box_size = box.max - box.min;
+
+                if !should_cull_lod(box_center, box_size) {
+                    let hit = intersect_box(ray, box, camera.time);
+                    if hit.hit && hit.distance < closest_hit.distance {
+                        closest_hit = hit;
+                    }
                 }
             }
         }

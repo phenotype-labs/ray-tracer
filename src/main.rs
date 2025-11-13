@@ -130,6 +130,22 @@ impl ApplicationHandler for App {
                 self.camera.update();
 
                 if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
+                    if raytracer.needs_reload() {
+                        let new_scene = raytracer.get_current_scene();
+                        println!("Reloading scene: {}", new_scene);
+                        std::env::set_var("SCENE", &new_scene);
+
+                        match pollster::block_on(RayTracer::new(window.clone())) {
+                            Ok(new_raytracer) => {
+                                *raytracer = new_raytracer;
+                                self.camera = Camera::new();
+                            }
+                            Err(e) => {
+                                eprintln!("Failed to reload scene: {}", e);
+                            }
+                        }
+                    }
+
                     if let Err(e) = raytracer.render(&self.camera, window, self.fps, self.time) {
                         eprintln!("Render error: {}", e);
                     }
