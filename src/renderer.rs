@@ -518,30 +518,77 @@ impl RayTracer {
         let raw_input = self.egui_state.take_egui_input(window);
         let current_scene = self.current_scene.clone();
         let needs_reload = self.needs_reload.clone();
+        let num_boxes = self.num_boxes;
+        let resolution = (self.size.width, self.size.height);
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("FPS")
-                .title_bar(false)
-                .resizable(false)
-                .fixed_pos(egui::pos2(10.0, 10.0))
-                .frame(egui::Frame::NONE)
-                .show(ctx, |ui| {
-                    ui.label(
-                        egui::RichText::new(format!("{:.0}", fps))
-                            .size(48.0)
-                            .color(egui::Color32::from_rgb(74, 158, 255)),
-                    );
-                    ui.label(
-                        egui::RichText::new("FPS")
-                            .size(12.0)
-                            .color(egui::Color32::GRAY),
-                    );
-                });
-
-            egui::Window::new("Scenes")
+            egui::Window::new("Debug Info")
                 .title_bar(true)
                 .resizable(false)
-                .fixed_pos(egui::pos2(10.0, 100.0))
+                .fixed_pos(egui::pos2(10.0, 10.0))
+                .default_width(250.0)
+                .show(ctx, |ui| {
+                    ui.heading(
+                        egui::RichText::new(format!("{:.0} FPS", fps))
+                            .size(32.0)
+                            .color(egui::Color32::from_rgb(74, 158, 255)),
+                    );
+
+                    let frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
+                    ui.label(
+                        egui::RichText::new(format!("{:.2} ms", frame_time_ms))
+                            .size(14.0)
+                            .color(egui::Color32::GRAY),
+                    );
+
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
+                    ui.label(
+                        egui::RichText::new("Camera")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(100, 200, 100)),
+                    );
+                    ui.monospace(format!(
+                        "Pos: ({:.2}, {:.2}, {:.2})",
+                        camera.position.x, camera.position.y, camera.position.z
+                    ));
+                    ui.monospace(format!(
+                        "Yaw: {:.1}° Pitch: {:.1}°",
+                        camera.yaw.to_degrees(),
+                        camera.pitch.to_degrees()
+                    ));
+
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
+                    ui.label(
+                        egui::RichText::new("Scene")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(200, 150, 100)),
+                    );
+                    ui.monospace(format!("Objects: {}", num_boxes));
+                    ui.monospace(format!("Name: {}", current_scene.lock().unwrap()));
+
+                    ui.add_space(5.0);
+                    ui.separator();
+                    ui.add_space(5.0);
+
+                    ui.label(
+                        egui::RichText::new("Rendering")
+                            .size(16.0)
+                            .color(egui::Color32::from_rgb(200, 100, 200)),
+                    );
+                    ui.monospace(format!("Resolution: {}x{}", resolution.0, resolution.1));
+                    ui.monospace(format!("Time: {:.2}s", time));
+                });
+
+            egui::Window::new("Scene Selector")
+                .title_bar(true)
+                .resizable(false)
+                .fixed_pos(egui::pos2(10.0, 310.0))
                 .show(ctx, |ui| {
                     ui.vertical(|ui| {
                         let mut scene = current_scene.lock().unwrap();
@@ -567,9 +614,6 @@ impl RayTracer {
                         if changed {
                             *needs_reload.lock().unwrap() = true;
                         }
-
-                        ui.separator();
-                        ui.label(format!("Current: {}", *scene));
                     });
                 });
         });
