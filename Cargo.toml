@@ -1,0 +1,15 @@
+[package]
+name = "ray-tracer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+winit = "0.30"
+wgpu = "22.1"
+pollster = "0.3"
+bytemuck = { version = "1.18", features = ["derive"] }
+glam = "0.29"
+env_logger = "0.11"
+egui = "0.29"
+egui-wgpu = "0.29"
+egui-winit = "0.29"
