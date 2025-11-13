@@ -179,7 +179,6 @@ struct RayTracer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
-    surface_config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
@@ -249,7 +248,6 @@ impl RayTracer {
             device,
             queue,
             surface,
-            surface_config,
             size,
             compute_pipeline,
             compute_bind_group,
@@ -537,7 +535,12 @@ impl RayTracer {
         (pipeline, bind_group)
     }
 
-    fn render(&mut self, camera: &Camera, window: &Window, fps: f32) -> std::result::Result<(), wgpu::SurfaceError> {
+    fn render(
+        &mut self,
+        camera: &Camera,
+        window: &Window,
+        fps: f32,
+    ) -> std::result::Result<(), wgpu::SurfaceError> {
         let camera_uniform = camera.to_uniform();
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -604,21 +607,25 @@ impl RayTracer {
                     ui.label(
                         egui::RichText::new(format!("{:.0}", fps))
                             .size(48.0)
-                            .color(egui::Color32::from_rgb(74, 158, 255))
+                            .color(egui::Color32::from_rgb(74, 158, 255)),
                     );
                     ui.label(
                         egui::RichText::new("FPS")
                             .size(12.0)
-                            .color(egui::Color32::GRAY)
+                            .color(egui::Color32::GRAY),
                     );
                 });
         });
 
-        self.egui_state.handle_platform_output(window, full_output.platform_output);
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
 
-        let tris = self.egui_ctx.tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
+        let tris = self
+            .egui_ctx
+            .tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
         for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer.update_texture(&self.device, &self.queue, *id, image_delta);
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
         }
 
         let screen_descriptor = egui_wgpu::ScreenDescriptor {
@@ -627,7 +634,13 @@ impl RayTracer {
         };
 
         // Update egui buffers
-        self.egui_renderer.update_buffers(&self.device, &self.queue, &mut encoder, &tris, &screen_descriptor);
+        self.egui_renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &tris,
+            &screen_descriptor,
+        );
 
         // Render egui - using scoped render pass
         {
@@ -651,10 +664,13 @@ impl RayTracer {
             // but egui-wgpu requires 'static. This is safe because we drop the
             // render pass before using the encoder again.
             let render_pass_static = unsafe {
-                std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(&mut render_pass)
+                std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(
+                    &mut render_pass,
+                )
             };
 
-            self.egui_renderer.render(render_pass_static, &tris, &screen_descriptor);
+            self.egui_renderer
+                .render(render_pass_static, &tris, &screen_descriptor);
         }
 
         for id in &full_output.textures_delta.free {
