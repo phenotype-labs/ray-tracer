@@ -1,4 +1,3 @@
-use egui_wgpu::ScreenDescriptor;
 use glam::Vec3;
 use std::sync::Arc;
 use std::time::Instant;
@@ -11,6 +10,21 @@ use winit::{
     window::{Window, WindowId},
 };
 
+// === Constants ===
+
+const WORKGROUP_SIZE: u32 = 8;
+const CAMERA_SPEED: f32 = 0.1;
+const FPS_UPDATE_INTERVAL: f32 = 1.0;
+const INITIAL_WINDOW_WIDTH: u32 = 800;
+const INITIAL_WINDOW_HEIGHT: u32 = 600;
+
+// === Type Aliases ===
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+// === GPU Data Structures ===
+
+/// Camera uniform buffer data for GPU
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct CameraUniform {
@@ -24,6 +38,7 @@ struct CameraUniform {
     _pad4: f32,
 }
 
+/// Box primitive data for GPU
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct BoxData {
@@ -35,17 +50,48 @@ struct BoxData {
     _pad3: f32,
 }
 
+impl BoxData {
+    const fn new(min: [f32; 3], max: [f32; 3], color: [f32; 3]) -> Self {
+        Self {
+            min,
+            _pad1: 0.0,
+            max,
+            _pad2: 0.0,
+            color,
+            _pad3: 0.0,
+        }
+    }
+}
+
+// === Camera System ===
+
+/// Movement direction flags
+#[derive(Default, Clone, Copy)]
+struct MovementState {
+    forward: bool,
+    backward: bool,
+    left: bool,
+    right: bool,
+    up: bool,
+    down: bool,
+}
+
+impl MovementState {
+    const fn velocity(&self) -> (f32, f32, f32) {
+        let forward = self.forward as i32 - self.backward as i32;
+        let right = self.right as i32 - self.left as i32;
+        let up = self.up as i32 - self.down as i32;
+
+        (forward as f32, right as f32, up as f32)
+    }
+}
+
+/// Camera with first-person controls
 struct Camera {
     position: Vec3,
     yaw: f32,
     pitch: f32,
-    speed: f32,
-    move_forward: bool,
-    move_backward: bool,
-    move_left: bool,
-    move_right: bool,
-    move_up: bool,
-    move_down: bool,
+    movement: MovementState,
 }
 
 impl Camera {
@@ -54,13 +100,7 @@ impl Camera {
             position: Vec3::new(0.0, 2.0, 5.0),
             yaw: std::f32::consts::PI,
             pitch: -0.3,
-            speed: 0.1,
-            move_forward: false,
-            move_backward: false,
-            move_left: false,
-            move_right: false,
-            move_up: false,
-            move_down: false,
+            movement: MovementState::default(),
         }
     }
 
@@ -82,27 +122,13 @@ impl Camera {
     }
 
     fn update(&mut self) {
-        let forward = self.forward();
-        let right = self.right();
+        let (fwd, right_dir, up_dir) = self.movement.velocity();
 
-        if self.move_forward {
-            self.position += forward * self.speed;
-        }
-        if self.move_backward {
-            self.position -= forward * self.speed;
-        }
-        if self.move_right {
-            self.position += right * self.speed;
-        }
-        if self.move_left {
-            self.position -= right * self.speed;
-        }
-        if self.move_up {
-            self.position.y += self.speed;
-        }
-        if self.move_down {
-            self.position.y -= self.speed;
-        }
+        let forward_vec = self.forward() * fwd * CAMERA_SPEED;
+        let right_vec = self.right() * right_dir * CAMERA_SPEED;
+        let up_vec = Vec3::Y * up_dir * CAMERA_SPEED;
+
+        self.position += forward_vec + right_vec + up_vec;
     }
 
     fn to_uniform(&self) -> CameraUniform {
@@ -122,51 +148,118 @@ impl Camera {
         let is_pressed = event.state.is_pressed();
         if let PhysicalKey::Code(keycode) = event.physical_key {
             match keycode {
-                KeyCode::KeyW => self.move_forward = is_pressed,
-                KeyCode::KeyS => self.move_backward = is_pressed,
-                KeyCode::KeyA => self.move_left = is_pressed,
-                KeyCode::KeyD => self.move_right = is_pressed,
-                KeyCode::Space => self.move_up = is_pressed,
-                KeyCode::ShiftLeft => self.move_down = is_pressed,
+                KeyCode::KeyW => self.movement.forward = is_pressed,
+                KeyCode::KeyS => self.movement.backward = is_pressed,
+                KeyCode::KeyA => self.movement.left = is_pressed,
+                KeyCode::KeyD => self.movement.right = is_pressed,
+                KeyCode::Space => self.movement.up = is_pressed,
+                KeyCode::ShiftLeft => self.movement.down = is_pressed,
                 _ => {}
             }
         }
     }
 }
 
+// === Scene Configuration ===
+
+/// Creates the default scene with boxes
+fn create_default_scene() -> Vec<BoxData> {
+    vec![
+        BoxData::new([-1.5, -0.5, -3.0], [-0.5, 0.5, -2.0], [1.0, 0.2, 0.2]),
+        BoxData::new([0.5, -0.5, -4.0], [1.5, 0.5, -3.0], [0.2, 1.0, 0.2]),
+        BoxData::new([-0.5, -0.5, -6.0], [0.5, 0.5, -5.0], [0.2, 0.2, 1.0]),
+        BoxData::new([-10.0, -1.0, -20.0], [10.0, -0.99, 0.0], [0.5, 0.5, 0.5]),
+    ]
+}
+
+// === Rendering System ===
+
+/// GPU-accelerated ray tracer using compute shaders
 struct RayTracer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface: wgpu::Surface<'static>,
-    config: wgpu::SurfaceConfiguration,
+    _config: wgpu::SurfaceConfiguration,
     size: winit::dpi::PhysicalSize<u32>,
     compute_pipeline: wgpu::ComputePipeline,
     compute_bind_group: wgpu::BindGroup,
     camera_buffer: wgpu::Buffer,
-    output_texture: wgpu::Texture,
-    output_texture_view: wgpu::TextureView,
+    _output_texture: wgpu::Texture,
+    _output_texture_view: wgpu::TextureView,
     render_pipeline: wgpu::RenderPipeline,
     render_bind_group: wgpu::BindGroup,
-    egui_renderer: egui_wgpu::Renderer,
 }
 
 impl RayTracer {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>) -> Result<Self> {
         let size = window.inner_size();
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
             ..Default::default()
         });
-        let surface = instance.create_surface(window).unwrap();
-        let adapter = instance
+
+        let surface = instance.create_surface(window)?;
+        let adapter = Self::request_adapter(&instance, &surface).await?;
+        let (device, queue) = Self::request_device(&adapter).await?;
+
+        let config = Self::create_surface_config(&surface, &adapter, size);
+        surface.configure(&device, &config);
+
+        let boxes = create_default_scene();
+        let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Box Buffer"),
+            contents: bytemuck::cast_slice(&boxes),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let camera_buffer = Self::create_camera_buffer(&device);
+        let (output_texture, output_texture_view) = Self::create_output_texture(&device, size);
+
+        let (compute_pipeline, compute_bind_group) = Self::create_compute_pipeline(
+            &device,
+            &camera_buffer,
+            &box_buffer,
+            &output_texture_view,
+        );
+
+        let (render_pipeline, render_bind_group) =
+            Self::create_render_pipeline(&device, &output_texture_view, config.format);
+
+        println!("Ray tracer initialized: {} boxes", boxes.len());
+
+        Ok(Self {
+            device,
+            queue,
+            surface,
+            _config: config,
+            size,
+            compute_pipeline,
+            compute_bind_group,
+            camera_buffer,
+            _output_texture: output_texture,
+            _output_texture_view: output_texture_view,
+            render_pipeline,
+            render_bind_group,
+        })
+    }
+
+    async fn request_adapter(
+        instance: &wgpu::Instance,
+        surface: &wgpu::Surface<'_>,
+    ) -> Result<wgpu::Adapter> {
+        instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::default(),
-                compatible_surface: Some(&surface),
+                compatible_surface: Some(surface),
                 force_fallback_adapter: false,
             })
             .await
-            .unwrap();
-        let (device, queue) = adapter
+            .ok_or("Failed to find appropriate adapter".into())
+    }
+
+    async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
+        adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
                     label: None,
@@ -177,16 +270,23 @@ impl RayTracer {
                 None,
             )
             .await
-            .unwrap();
+            .map_err(|e| e.into())
+    }
 
-        let surface_caps = surface.get_capabilities(&adapter);
+    fn create_surface_config(
+        surface: &wgpu::Surface,
+        adapter: &wgpu::Adapter,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> wgpu::SurfaceConfiguration {
+        let surface_caps = surface.get_capabilities(adapter);
         let surface_format = surface_caps
             .formats
             .iter()
             .copied()
             .find(|f| f.is_srgb())
             .unwrap_or(surface_caps.formats[0]);
-        let config = wgpu::SurfaceConfiguration {
+
+        wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width: size.width,
@@ -195,58 +295,25 @@ impl RayTracer {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
-        };
-        surface.configure(&device, &config);
+        }
+    }
 
-        let boxes = vec![
-            BoxData {
-                min: [-1.5, -0.5, -3.0],
-                _pad1: 0.0,
-                max: [-0.5, 0.5, -2.0],
-                _pad2: 0.0,
-                color: [1.0, 0.2, 0.2],
-                _pad3: 0.0,
-            },
-            BoxData {
-                min: [0.5, -0.5, -4.0],
-                _pad1: 0.0,
-                max: [1.5, 0.5, -3.0],
-                _pad2: 0.0,
-                color: [0.2, 1.0, 0.2],
-                _pad3: 0.0,
-            },
-            BoxData {
-                min: [-0.5, -0.5, -6.0],
-                _pad1: 0.0,
-                max: [0.5, 0.5, -5.0],
-                _pad2: 0.0,
-                color: [0.2, 0.2, 1.0],
-                _pad3: 0.0,
-            },
-            BoxData {
-                min: [-10.0, -1.0, -20.0],
-                _pad1: 0.0,
-                max: [10.0, -0.99, 0.0],
-                _pad2: 0.0,
-                color: [0.5, 0.5, 0.5],
-                _pad3: 0.0,
-            },
-        ];
-        let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Box Buffer"),
-            contents: bytemuck::cast_slice(&boxes),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-
+    fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
         let camera_uniform = camera.to_uniform();
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
             contents: bytemuck::cast_slice(&[camera_uniform]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        })
+    }
 
-        let output_texture = device.create_texture(&wgpu::TextureDescriptor {
+    fn create_output_texture(
+        device: &wgpu::Device,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Output Texture"),
             size: wgpu::Extent3d {
                 width: size.width,
@@ -260,15 +327,23 @@ impl RayTracer {
             usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
-        let output_texture_view =
-            output_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let compute_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    fn create_compute_pipeline(
+        device: &wgpu::Device,
+        camera_buffer: &wgpu::Buffer,
+        box_buffer: &wgpu::Buffer,
+        output_texture_view: &wgpu::TextureView,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Compute Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("raytracer.wgsl").into()),
         });
 
-        let compute_bind_group_layout =
+        let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -305,8 +380,8 @@ impl RayTracer {
                 label: Some("compute_bind_group_layout"),
             });
 
-        let compute_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &compute_bind_group_layout,
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
@@ -318,34 +393,41 @@ impl RayTracer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 2,
-                    resource: wgpu::BindingResource::TextureView(&output_texture_view),
+                    resource: wgpu::BindingResource::TextureView(output_texture_view),
                 },
             ],
             label: Some("compute_bind_group"),
         });
 
-        let compute_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Compute Pipeline Layout"),
-                bind_group_layouts: &[&compute_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Compute Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
-        let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
             label: Some("Compute Pipeline"),
-            layout: Some(&compute_pipeline_layout),
-            module: &compute_shader,
+            layout: Some(&pipeline_layout),
+            module: &shader,
             entry_point: "main",
             compilation_options: Default::default(),
             cache: None,
         });
 
-        let display_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        (pipeline, bind_group)
+    }
+
+    fn create_render_pipeline(
+        device: &wgpu::Device,
+        output_texture_view: &wgpu::TextureView,
+        surface_format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Display Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("display.wgsl").into()),
         });
 
-        let render_bind_group_layout =
+        let bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
@@ -378,12 +460,12 @@ impl RayTracer {
             ..Default::default()
         });
 
-        let render_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &render_bind_group_layout,
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&output_texture_view),
+                    resource: wgpu::BindingResource::TextureView(output_texture_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -393,27 +475,26 @@ impl RayTracer {
             label: Some("render_bind_group"),
         });
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&render_bind_group_layout],
-                push_constant_ranges: &[],
-            });
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
 
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Display Pipeline"),
-            layout: Some(&render_pipeline_layout),
+            layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
-                module: &display_shader,
+                module: &shader,
                 entry_point: "vs_main",
                 buffers: &[],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
-                module: &display_shader,
+                module: &shader,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: config.format,
+                    format: surface_format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -438,35 +519,10 @@ impl RayTracer {
             cache: None,
         });
 
-        let egui_renderer = egui_wgpu::Renderer::new(&device, surface_format, None, 1, false);
-
-        println!("Ray tracer initialized: 4 boxes");
-
-        Self {
-            device,
-            queue,
-            surface,
-            config,
-            size,
-            compute_pipeline,
-            compute_bind_group,
-            camera_buffer,
-            output_texture,
-            output_texture_view,
-            render_pipeline,
-            render_bind_group,
-            egui_renderer,
-        }
+        (pipeline, bind_group)
     }
 
-    fn render(
-        &mut self,
-        camera: &Camera,
-        window: &Window,
-        egui_state: &mut egui_winit::State,
-        egui_ctx: &egui::Context,
-        fps: f32,
-    ) -> Result<(), wgpu::SurfaceError> {
+    fn render(&mut self, camera: &Camera) -> std::result::Result<(), wgpu::SurfaceError> {
         let camera_uniform = camera.to_uniform();
         self.queue.write_buffer(
             &self.camera_buffer,
@@ -487,8 +543,9 @@ impl RayTracer {
             });
             compute_pass.set_pipeline(&self.compute_pipeline);
             compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
-            let workgroup_size_x = (self.size.width + 7) / 8;
-            let workgroup_size_y = (self.size.height + 7) / 8;
+
+            let workgroup_size_x = self.size.width.div_ceil(WORKGROUP_SIZE);
+            let workgroup_size_y = self.size.height.div_ceil(WORKGROUP_SIZE);
             compute_pass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, 1);
         }
 
@@ -496,55 +553,6 @@ impl RayTracer {
         let view = output
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
-
-        let raw_input = egui_state.take_egui_input(window);
-        let full_output = egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Ray Tracer Info")
-                .default_pos([10.0, 10.0])
-                .show(ctx, |ui| {
-                    ui.heading("Performance");
-                    ui.label(format!("FPS: {:.1}", fps));
-                    ui.separator();
-
-                    ui.heading("Camera");
-                    ui.label(format!(
-                        "Position: ({:.2}, {:.2}, {:.2})",
-                        camera.position.x, camera.position.y, camera.position.z
-                    ));
-                    ui.label(format!("Yaw: {:.2}", camera.yaw));
-                    ui.label(format!("Pitch: {:.2}", camera.pitch));
-                    ui.separator();
-
-                    ui.heading("Controls");
-                    ui.label("WASD - Move horizontally");
-                    ui.label("Space - Move up");
-                    ui.label("Shift - Move down");
-                    ui.label("ESC - Quit");
-                });
-        });
-
-        egui_state.handle_platform_output(window, full_output.platform_output);
-
-        let clipped_primitives =
-            egui_ctx.tessellate(full_output.shapes, egui_ctx.pixels_per_point());
-
-        let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [self.size.width, self.size.height],
-            pixels_per_point: window.scale_factor() as f32,
-        };
-
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.egui_renderer
-                .update_texture(&self.device, &self.queue, *id, image_delta);
-        }
-
-        self.egui_renderer.update_buffers(
-            &self.device,
-            &self.queue,
-            &mut encoder,
-            &clipped_primitives,
-            &screen_descriptor,
-        );
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -566,37 +574,13 @@ impl RayTracer {
             render_pass.draw(0..6, 0..1);
         }
 
-        {
-            let mut egui_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Egui Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            self.egui_renderer.render(
-                &mut egui_render_pass,
-                &clipped_primitives,
-                &screen_descriptor,
-            );
-        }
-
-        for id in &full_output.textures_delta.free {
-            self.egui_renderer.free_texture(id);
-        }
-
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
         Ok(())
     }
 }
+
+// === Application ===
 
 struct App {
     window: Option<Arc<Window>>,
@@ -606,34 +590,64 @@ struct App {
     frame_count: u32,
     fps: f32,
     fps_update_timer: f32,
-    egui_state: Option<egui_winit::State>,
-    egui_ctx: egui::Context,
+}
+
+impl App {
+    fn new() -> Self {
+        Self {
+            window: None,
+            raytracer: None,
+            camera: Camera::new(),
+            last_frame_time: Instant::now(),
+            frame_count: 0,
+            fps: 0.0,
+            fps_update_timer: 0.0,
+        }
+    }
+
+    fn update_fps(&mut self, delta: f32) {
+        self.frame_count += 1;
+        self.fps_update_timer += delta;
+
+        if self.fps_update_timer >= FPS_UPDATE_INTERVAL {
+            self.fps = self.frame_count as f32 / self.fps_update_timer;
+            println!("FPS: {:.1}", self.fps);
+            self.frame_count = 0;
+            self.fps_update_timer = 0.0;
+        }
+    }
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let window = Arc::new(
-                event_loop
-                    .create_window(
-                        Window::default_attributes()
-                            .with_title("Ray Tracer")
-                            .with_inner_size(winit::dpi::LogicalSize::new(800, 600)),
-                    )
-                    .unwrap(),
-            );
-            let egui_state = egui_winit::State::new(
-                self.egui_ctx.clone(),
-                egui::ViewportId::ROOT,
-                &window,
-                Some(window.scale_factor() as f32),
-                None,
-                None,
-            );
-            let raytracer = pollster::block_on(RayTracer::new(window.clone()));
+            let window = match event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("Ray Tracer")
+                    .with_inner_size(winit::dpi::LogicalSize::new(
+                        INITIAL_WINDOW_WIDTH,
+                        INITIAL_WINDOW_HEIGHT,
+                    )),
+            ) {
+                Ok(w) => Arc::new(w),
+                Err(e) => {
+                    eprintln!("Failed to create window: {}", e);
+                    event_loop.exit();
+                    return;
+                }
+            };
+
+            let raytracer = match pollster::block_on(RayTracer::new(window.clone())) {
+                Ok(rt) => rt,
+                Err(e) => {
+                    eprintln!("Failed to initialize ray tracer: {}", e);
+                    event_loop.exit();
+                    return;
+                }
+            };
+
             self.window = Some(window);
             self.raytracer = Some(raytracer);
-            self.egui_state = Some(egui_state);
         }
     }
 
@@ -643,10 +657,6 @@ impl ApplicationHandler for App {
         _window_id: WindowId,
         event: WindowEvent,
     ) {
-        if let Some(egui_state) = &mut self.egui_state {
-            let _ = egui_state.on_window_event(&self.window.as_ref().unwrap(), &event);
-        }
-
         match event {
             WindowEvent::CloseRequested
             | WindowEvent::KeyboardInput {
@@ -663,25 +673,14 @@ impl ApplicationHandler for App {
                 let now = Instant::now();
                 let delta = now.duration_since(self.last_frame_time).as_secs_f32();
                 self.last_frame_time = now;
-                self.frame_count += 1;
-                self.fps_update_timer += delta;
-                if self.fps_update_timer >= 1.0 {
-                    self.fps = self.frame_count as f32 / self.fps_update_timer;
-                    println!("FPS: {:.1}", self.fps);
-                    self.frame_count = 0;
-                    self.fps_update_timer = 0.0;
-                }
+
+                self.update_fps(delta);
                 self.camera.update();
-                if let (Some(raytracer), Some(window), Some(egui_state)) =
-                    (&mut self.raytracer, &self.window, &mut self.egui_state)
-                {
-                    let _ = raytracer.render(
-                        &self.camera,
-                        window,
-                        egui_state,
-                        &self.egui_ctx,
-                        self.fps,
-                    );
+
+                if let Some(raytracer) = &mut self.raytracer {
+                    if let Err(e) = raytracer.render(&self.camera) {
+                        eprintln!("Render error: {}", e);
+                    }
                 }
             }
             _ => {}
@@ -695,20 +694,14 @@ impl ApplicationHandler for App {
     }
 }
 
-fn main() {
+fn main() -> Result<()> {
     env_logger::init();
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = App {
-        window: None,
-        raytracer: None,
-        camera: Camera::new(),
-        last_frame_time: Instant::now(),
-        frame_count: 0,
-        fps: 0.0,
-        fps_update_timer: 0.0,
-        egui_state: None,
-        egui_ctx: egui::Context::default(),
-    };
+
+    let event_loop = EventLoop::new()?;
+    let mut app = App::new();
+
     println!("Simple Ray Tracer - Controls: WASD, Space/Shift, Escape to quit");
-    event_loop.run_app(&mut app).unwrap();
+    event_loop.run_app(&mut app)?;
+
+    Ok(())
 }

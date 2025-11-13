@@ -1,0 +1,1 @@
+- prefer functional programming. clean code. dry. kiss. always!
