@@ -1,0 +1,605 @@
+use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use winit::window::Window;
+use crate::camera::Camera;
+use crate::grid::HierarchicalGrid;
+use crate::scene::create_default_scene;
+
+pub const WORKGROUP_SIZE: u32 = 8;
+
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// GPU-accelerated ray tracer using compute shaders
+pub struct RayTracer {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    surface: wgpu::Surface<'static>,
+    size: winit::dpi::PhysicalSize<u32>,
+    compute_pipeline: wgpu::ComputePipeline,
+    compute_bind_group: wgpu::BindGroup,
+    camera_buffer: wgpu::Buffer,
+    render_pipeline: wgpu::RenderPipeline,
+    render_bind_group: wgpu::BindGroup,
+    egui_renderer: egui_wgpu::Renderer,
+    egui_state: egui_winit::State,
+    egui_ctx: egui::Context,
+    num_boxes: usize,
+}
+
+impl RayTracer {
+    pub async fn new(window: Arc<Window>) -> Result<Self> {
+        let size = window.inner_size();
+
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+            backends: wgpu::Backends::PRIMARY,
+            ..Default::default()
+        });
+
+        let surface = instance.create_surface(window.clone())?;
+        let adapter = Self::request_adapter(&instance, &surface).await?;
+        let (device, queue) = Self::request_device(&adapter).await?;
+
+        let surface_config = Self::create_surface_config(&surface, &adapter, size);
+        surface.configure(&device, &surface_config);
+
+        // Build hierarchical grid from scene
+        let boxes = create_default_scene();
+        let num_boxes = boxes.len();
+
+        println!("Building Hierarchical Grid...");
+        let grid = HierarchicalGrid::build(&boxes);
+        let (metadata, coarse_counts, fine_cells) = grid.to_gpu_buffers();
+
+        let grid_meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Grid Metadata"),
+            contents: bytemuck::cast_slice(&[metadata]),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+
+        let coarse_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Coarse Counts"),
+            contents: &coarse_counts,
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let fine_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Fine Cells"),
+            contents: bytemuck::cast_slice(&fine_cells),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Box Buffer"),
+            contents: bytemuck::cast_slice(&boxes),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        let camera_buffer = Self::create_camera_buffer(&device);
+        let (_output_texture, output_texture_view) = Self::create_output_texture(&device, size);
+
+        let (compute_pipeline, compute_bind_group) = Self::create_compute_pipeline(
+            &device,
+            &camera_buffer,
+            &grid_meta_buffer,
+            &coarse_buffer,
+            &fine_buffer,
+            &box_buffer,
+            &output_texture_view,
+        );
+
+        let (render_pipeline, render_bind_group) =
+            Self::create_render_pipeline(&device, &output_texture_view, surface_config.format);
+
+        // Initialize egui
+        let egui_ctx = egui::Context::default();
+        let egui_state = egui_winit::State::new(
+            egui_ctx.clone(),
+            egui::ViewportId::ROOT,
+            &window,
+            Some(window.scale_factor() as f32),
+            None,
+            None,
+        );
+        let egui_renderer = egui_wgpu::Renderer::new(
+            &device,
+            surface_config.format,
+            egui_wgpu::RendererOptions::default(),
+        );
+
+        println!("Ray tracer initialized: {} boxes", num_boxes);
+
+        Ok(Self {
+            device,
+            queue,
+            surface,
+            size,
+            compute_pipeline,
+            compute_bind_group,
+            camera_buffer,
+            render_pipeline,
+            render_bind_group,
+            egui_renderer,
+            egui_state,
+            egui_ctx,
+            num_boxes,
+        })
+    }
+
+    async fn request_adapter(
+        instance: &wgpu::Instance,
+        surface: &wgpu::Surface<'_>,
+    ) -> Result<wgpu::Adapter> {
+        instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .map_err(|_| "Failed to find appropriate adapter".into())
+    }
+
+    async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
+        adapter
+            .request_device(&wgpu::DeviceDescriptor {
+                label: None,
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
+                memory_hints: Default::default(),
+                experimental_features: Default::default(),
+                trace: Default::default(),
+            })
+            .await
+            .map_err(|e| e.into())
+    }
+
+    fn create_surface_config(
+        surface: &wgpu::Surface,
+        adapter: &wgpu::Adapter,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> wgpu::SurfaceConfiguration {
+        let surface_caps = surface.get_capabilities(adapter);
+        let surface_format = surface_caps
+            .formats
+            .iter()
+            .copied()
+            .find(|f| f.is_srgb())
+            .unwrap_or(surface_caps.formats[0]);
+
+        wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width: size.width,
+            height: size.height,
+            present_mode: surface_caps.present_modes[0],
+            alpha_mode: surface_caps.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 2,
+        }
+    }
+
+    fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+        let camera = Camera::new();
+        let camera_uniform = camera.to_uniform(0.0); // Initialize with time = 0.0
+
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Camera Buffer"),
+            contents: bytemuck::cast_slice(&[camera_uniform]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        })
+    }
+
+    fn create_output_texture(
+        device: &wgpu::Device,
+        size: winit::dpi::PhysicalSize<u32>,
+    ) -> (wgpu::Texture, wgpu::TextureView) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Output Texture"),
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        (texture, view)
+    }
+
+    fn create_compute_pipeline(
+        device: &wgpu::Device,
+        camera_buffer: &wgpu::Buffer,
+        grid_meta_buffer: &wgpu::Buffer,
+        coarse_buffer: &wgpu::Buffer,
+        fine_buffer: &wgpu::Buffer,
+        box_buffer: &wgpu::Buffer,
+        output_texture_view: &wgpu::TextureView,
+    ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Grid Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("raytracer_grid.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                // Binding 0: Camera
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 1: Grid Metadata
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 2: Coarse level counts
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 3: Fine level cells
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 4: Boxes
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 5: Output texture
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+            label: Some("grid_bind_group_layout"),
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: camera_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: grid_meta_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: coarse_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: fine_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: box_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(output_texture_view),
+                },
+            ],
+            label: Some("grid_bind_group"),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Grid Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("Grid Pipeline"),
+            layout: Some(&pipeline_layout),
+            module: &shader,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
+        (pipeline, bind_group)
+    }
+
+    fn create_render_pipeline(
+        device: &wgpu::Device,
+        output_texture_view: &wgpu::TextureView,
+        surface_format: wgpu::TextureFormat,
+    ) -> (wgpu::RenderPipeline, wgpu::BindGroup) {
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Display Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("display.wgsl").into()),
+        });
+
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("render_bind_group_layout"),
+        });
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(output_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("render_bind_group"),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Render Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Display Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
+        });
+
+        (pipeline, bind_group)
+    }
+
+    pub fn render(
+        &mut self,
+        camera: &Camera,
+        window: &Window,
+        fps: f32,
+        time: f32,
+    ) -> std::result::Result<(), wgpu::SurfaceError> {
+        let camera_uniform = camera.to_uniform(time);
+        self.queue.write_buffer(
+            &self.camera_buffer,
+            0,
+            bytemuck::cast_slice(&[camera_uniform]),
+        );
+
+        let output = self.surface.get_current_texture()?;
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Encoder"),
+            });
+
+        // Compute pass - ray tracing
+        {
+            let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("Compute Pass"),
+                timestamp_writes: None,
+            });
+            compute_pass.set_pipeline(&self.compute_pipeline);
+            compute_pass.set_bind_group(0, &self.compute_bind_group, &[]);
+
+            let workgroup_size_x = self.size.width.div_ceil(WORKGROUP_SIZE);
+            let workgroup_size_y = self.size.height.div_ceil(WORKGROUP_SIZE);
+            compute_pass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, 1);
+        }
+
+        // Render pass - display ray traced image
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Display Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            render_pass.set_pipeline(&self.render_pipeline);
+            render_pass.set_bind_group(0, &self.render_bind_group, &[]);
+            render_pass.draw(0..6, 0..1);
+        }
+
+        // egui pass - UI overlay
+        let raw_input = self.egui_state.take_egui_input(window);
+        let full_output = self.egui_ctx.run(raw_input, |ctx| {
+            egui::Window::new("FPS")
+                .title_bar(false)
+                .resizable(false)
+                .fixed_pos(egui::pos2(10.0, 10.0))
+                .frame(egui::Frame::NONE)
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new(format!("{:.0}", fps))
+                            .size(48.0)
+                            .color(egui::Color32::from_rgb(74, 158, 255)),
+                    );
+                    ui.label(
+                        egui::RichText::new("FPS")
+                            .size(12.0)
+                            .color(egui::Color32::GRAY),
+                    );
+                });
+        });
+
+        self.egui_state
+            .handle_platform_output(window, full_output.platform_output);
+
+        let tris = self
+            .egui_ctx
+            .tessellate(full_output.shapes, self.egui_ctx.pixels_per_point());
+        for (id, image_delta) in &full_output.textures_delta.set {
+            self.egui_renderer
+                .update_texture(&self.device, &self.queue, *id, image_delta);
+        }
+
+        let screen_descriptor = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [self.size.width, self.size.height],
+            pixels_per_point: window.scale_factor() as f32,
+        };
+
+        // Update egui buffers
+        self.egui_renderer.update_buffers(
+            &self.device,
+            &self.queue,
+            &mut encoder,
+            &tris,
+            &screen_descriptor,
+        );
+
+        // Render egui - using scoped render pass
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("egui Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+
+            // SAFETY: The render pass lifetime is actually tied to the encoder,
+            // but egui-wgpu requires 'static. This is safe because we drop the
+            // render pass before using the encoder again.
+            let render_pass_static = unsafe {
+                std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(
+                    &mut render_pass,
+                )
+            };
+
+            self.egui_renderer
+                .render(render_pass_static, &tris, &screen_descriptor);
+        }
+
+        for id in &full_output.textures_delta.free {
+            self.egui_renderer.free_texture(id);
+        }
+
+        self.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+        Ok(())
+    }
+
+    pub fn handle_event(&mut self, window: &Window, event: &winit::event::WindowEvent) -> bool {
+        self.egui_state.on_window_event(window, event).consumed
+    }
+}
