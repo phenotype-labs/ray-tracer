@@ -11,16 +11,22 @@ struct Camera {
     right: vec3<f32>,
     _pad3: f32,
     up: vec3<f32>,
-    _pad4: f32,
+    time: f32,
 };
 
 struct Box {
     min: vec3<f32>,
-    _pad1: f32,
+    is_moving: f32,
     max: vec3<f32>,
     _pad2: f32,
     color: vec3<f32>,
     _pad3: f32,
+    center0: vec3<f32>,
+    _pad4: f32,
+    center1: vec3<f32>,
+    _pad5: f32,
+    half_size: vec3<f32>,
+    _pad6: f32,
 };
 
 struct GridMetadata {
@@ -87,12 +93,24 @@ fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
 }
 
 // Ray-box intersection (detailed hit info)
-fn intersect_box(ray: Ray, box: Box) -> HitInfo {
+fn intersect_box(ray: Ray, box: Box, time: f32) -> HitInfo {
     var hit: HitInfo;
     hit.hit = false;
     hit.distance = 1e10;
 
-    let t = intersect_aabb(ray, box.min, box.max);
+    // Interpolate box position for moving objects
+    // Use sin for oscillating motion between 0 and 1
+    let t_lerp = (sin(time * 2.0) + 1.0) * 0.5;
+    let interpolated_center = mix(box.center0, box.center1, t_lerp);
+
+    // Use the actual box half-size stored in the structure
+    let box_half_size = box.half_size;
+
+    // Create bounds around interpolated center
+    let box_min = interpolated_center - box_half_size;
+    let box_max = interpolated_center + box_half_size;
+
+    let t = intersect_aabb(ray, box_min, box_max);
     if t < 0.0 {
         return hit;
     }
@@ -101,10 +119,9 @@ fn intersect_box(ray: Ray, box: Box) -> HitInfo {
     hit.distance = t;
     hit.position = ray.origin + ray.direction * t;
 
-    // Calculate normal
-    let center = (box.min + box.max) * 0.5;
-    let p = hit.position - center;
-    let d = abs(p) - (box.max - box.min) * 0.5;
+    // Calculate normal using interpolated center
+    let p = hit.position - interpolated_center;
+    let d = abs(p) - box_half_size;
 
     if d.x > d.y && d.x > d.z {
         hit.normal = vec3<f32>(sign(p.x), 0.0, 0.0);
@@ -161,6 +178,18 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     var closest_hit: HitInfo;
     closest_hit.hit = false;
     closest_hit.distance = 1e10;
+
+    // FIRST: Test all moving objects (bypass grid optimization)
+    // Moving objects need to be tested directly because their AABB in the grid
+    // is larger than their actual size at any given time
+    for (var i = 0u; i < arrayLength(&boxes); i++) {
+        if boxes[i].is_moving > 0.5 {
+            let hit = intersect_box(ray, boxes[i], camera.time);
+            if hit.hit && hit.distance < closest_hit.distance {
+                closest_hit = hit;
+            }
+        }
+    }
 
     let cell_size = grid_meta.finest_cell_size;
     let grid_size = grid_meta.grid_sizes[GRID_LEVELS - 1u].xyz;
@@ -221,7 +250,7 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
         if cell_data.count > 0u {
             for (var j = 0u; j < cell_data.count && j < MAX_OBJECTS_PER_CELL; j++) {
                 let obj_idx = cell_data.object_indices[j];
-                let hit = intersect_box(ray, boxes[obj_idx]);
+                let hit = intersect_box(ray, boxes[obj_idx], camera.time);
                 if hit.hit && hit.distance < closest_hit.distance {
                     closest_hit = hit;
                 }
