@@ -4,6 +4,7 @@ use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
 use crate::scene::{create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene};
+use crate::types::{RayDebugInfo, DebugParams};
 
 pub const WORKGROUP_SIZE: u32 = 8;
 
@@ -26,6 +27,13 @@ pub struct RayTracer {
     current_scene: Arc<Mutex<String>>,
     needs_reload: Arc<Mutex<bool>>,
     show_grid: Arc<Mutex<bool>>,
+    debug_params_buffer: wgpu::Buffer,
+    debug_info_buffer: wgpu::Buffer,
+    debug_info: RayDebugInfo,
+    debug_pixel: Option<(u32, u32)>,
+    clear_debug_requested: Arc<Mutex<bool>>,
+    manual_debug_x: String,
+    manual_debug_y: String,
 }
 
 impl RayTracer {
@@ -86,6 +94,22 @@ impl RayTracer {
         let camera_buffer = Self::create_camera_buffer(&device);
         let (_output_texture, output_texture_view) = Self::create_output_texture(&device, size);
 
+        let debug_params_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Debug Params Buffer"),
+            contents: bytemuck::cast_slice(&[DebugParams {
+                debug_pixel: [0, 0],
+                enabled: 0,
+                _pad: 0,
+            }]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let debug_info_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Debug Info Buffer"),
+            contents: bytemuck::cast_slice(&[RayDebugInfo::default()]),
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        });
+
         let (compute_pipeline, compute_bind_group) = Self::create_compute_pipeline(
             &device,
             &camera_buffer,
@@ -94,6 +118,8 @@ impl RayTracer {
             &fine_buffer,
             &box_buffer,
             &output_texture_view,
+            &debug_params_buffer,
+            &debug_info_buffer,
         );
 
         let (render_pipeline, render_bind_group) =
@@ -133,6 +159,13 @@ impl RayTracer {
             current_scene: Arc::new(Mutex::new(scene_name)),
             needs_reload: Arc::new(Mutex::new(false)),
             show_grid: Arc::new(Mutex::new(false)),
+            debug_params_buffer,
+            debug_info_buffer,
+            debug_info: RayDebugInfo::default(),
+            debug_pixel: None,
+            clear_debug_requested: Arc::new(Mutex::new(false)),
+            manual_debug_x: String::new(),
+            manual_debug_y: String::new(),
         })
     }
 
@@ -232,6 +265,8 @@ impl RayTracer {
         fine_buffer: &wgpu::Buffer,
         box_buffer: &wgpu::Buffer,
         output_texture_view: &wgpu::TextureView,
+        debug_params_buffer: &wgpu::Buffer,
+        debug_info_buffer: &wgpu::Buffer,
     ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Grid Compute Shader"),
@@ -300,6 +335,26 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
             label: Some("grid_bind_group_layout"),
         });
@@ -330,6 +385,14 @@ impl RayTracer {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(output_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: debug_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: debug_info_buffer.as_entire_binding(),
                 },
             ],
             label: Some("grid_bind_group"),
@@ -473,6 +536,25 @@ impl RayTracer {
             bytemuck::cast_slice(&[camera_uniform]),
         );
 
+        let debug_params = if let Some((x, y)) = self.debug_pixel {
+            DebugParams {
+                debug_pixel: [x, y],
+                enabled: 1,
+                _pad: 0,
+            }
+        } else {
+            DebugParams {
+                debug_pixel: [0, 0],
+                enabled: 0,
+                _pad: 0,
+            }
+        };
+        self.queue.write_buffer(
+            &self.debug_params_buffer,
+            0,
+            bytemuck::cast_slice(&[debug_params]),
+        );
+
         let output = self.surface.get_current_texture()?;
         let view = output
             .texture
@@ -495,6 +577,47 @@ impl RayTracer {
             let workgroup_size_x = self.size.width.div_ceil(WORKGROUP_SIZE);
             let workgroup_size_y = self.size.height.div_ceil(WORKGROUP_SIZE);
             compute_pass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, 1);
+        }
+
+        if self.debug_pixel.is_some() {
+            let staging_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("Debug Info Staging Buffer"),
+                size: std::mem::size_of::<RayDebugInfo>() as u64,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            });
+
+            encoder.copy_buffer_to_buffer(
+                &self.debug_info_buffer,
+                0,
+                &staging_buffer,
+                0,
+                std::mem::size_of::<RayDebugInfo>() as u64,
+            );
+
+            self.queue.submit(std::iter::once(encoder.finish()));
+
+            let buffer_slice = staging_buffer.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                tx.send(result).ok();
+            });
+
+            self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            }).ok();
+
+            rx.recv().ok();
+            {
+                let data = buffer_slice.get_mapped_range();
+                self.debug_info = *bytemuck::from_bytes(&data);
+            }
+            staging_buffer.unmap();
+
+            encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Encoder 2"),
+            });
         }
 
         {
@@ -522,8 +645,11 @@ impl RayTracer {
         let current_scene = self.current_scene.clone();
         let needs_reload = self.needs_reload.clone();
         let show_grid = self.show_grid.clone();
+        let clear_debug_requested = self.clear_debug_requested.clone();
         let num_boxes = self.num_boxes;
         let resolution = (self.size.width, self.size.height);
+        let debug_pixel = self.debug_pixel;
+        let debug_info = self.debug_info;
 
         let full_output = self.egui_ctx.run(raw_input, |ctx| {
             egui::Window::new("Debug Info")
@@ -627,6 +753,131 @@ impl RayTracer {
                         ui.checkbox(&mut *show_grid_val, "Show Grid Cells");
                     });
                 });
+
+            egui::Window::new("Ray Debugger")
+                .title_bar(true)
+                .resizable(true)
+                .default_pos(egui::pos2(resolution.0 as f32 - 340.0, 10.0))
+                .default_width(320.0)
+                .show(ctx, |ui| {
+                    ui.heading(
+                        egui::RichText::new("Ray Debug")
+                            .size(18.0)
+                            .color(egui::Color32::from_rgb(255, 200, 100)),
+                    );
+                    ui.add_space(5.0);
+
+                    if let Some((x, y)) = debug_pixel {
+                        ui.label(
+                            egui::RichText::new(format!("Pixel: ({}, {})", x, y))
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(100, 200, 255)),
+                        );
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        ui.label(
+                            egui::RichText::new("Ray Origin")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(150, 150, 255)),
+                        );
+                        ui.monospace(format!(
+                            "  ({:.2}, {:.2}, {:.2})",
+                            debug_info.ray_origin[0], debug_info.ray_origin[1], debug_info.ray_origin[2]
+                        ));
+
+                        ui.add_space(5.0);
+                        ui.label(
+                            egui::RichText::new("Ray Direction")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(150, 150, 255)),
+                        );
+                        ui.monospace(format!(
+                            "  ({:.3}, {:.3}, {:.3})",
+                            debug_info.ray_direction[0], debug_info.ray_direction[1], debug_info.ray_direction[2]
+                        ));
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        if debug_info.hit > 0.5 {
+                            ui.label(
+                                egui::RichText::new("HIT")
+                                    .size(16.0)
+                                    .color(egui::Color32::from_rgb(100, 255, 100)),
+                            );
+
+                            ui.monospace(format!("Distance: {:.2}", debug_info.distance));
+                            ui.monospace(format!("Object ID: {:.0}", debug_info.object_id));
+                            ui.monospace(format!("Steps: {:.0}", debug_info.num_steps));
+
+                            ui.add_space(5.0);
+                            ui.label(
+                                egui::RichText::new("Hit Position")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(150, 150, 255)),
+                            );
+                            ui.monospace(format!(
+                                "  ({:.2}, {:.2}, {:.2})",
+                                debug_info.hit_position[0], debug_info.hit_position[1], debug_info.hit_position[2]
+                            ));
+
+                            ui.add_space(5.0);
+                            ui.label(
+                                egui::RichText::new("Hit Normal")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(150, 150, 255)),
+                            );
+                            ui.monospace(format!(
+                                "  ({:.2}, {:.2}, {:.2})",
+                                debug_info.hit_normal[0], debug_info.hit_normal[1], debug_info.hit_normal[2]
+                            ));
+
+                            ui.add_space(5.0);
+                            ui.label(
+                                egui::RichText::new("Surface Color")
+                                    .size(14.0)
+                                    .color(egui::Color32::from_rgb(150, 150, 255)),
+                            );
+                            ui.monospace(format!(
+                                "  ({:.2}, {:.2}, {:.2})",
+                                debug_info.hit_color[0], debug_info.hit_color[1], debug_info.hit_color[2]
+                            ));
+                        } else {
+                            ui.label(
+                                egui::RichText::new("MISS")
+                                    .size(16.0)
+                                    .color(egui::Color32::from_rgb(255, 100, 100)),
+                            );
+                            ui.monospace(format!("Steps: {:.0}", debug_info.num_steps));
+                        }
+
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        if ui.button("Clear Debug Pixel").clicked() {
+                            *clear_debug_requested.lock().unwrap() = true;
+                        }
+                    } else {
+                        ui.label("Click on a pixel to debug its ray");
+                        ui.add_space(10.0);
+                        ui.separator();
+                        ui.add_space(5.0);
+
+                        ui.label(
+                            egui::RichText::new("Manual Entry")
+                                .size(14.0)
+                                .color(egui::Color32::from_rgb(150, 150, 255)),
+                        );
+                        ui.label("Enter pixel coordinates:");
+                        ui.add_space(5.0);
+                        ui.label("(Coming soon)");
+                    }
+                });
         });
 
         self.egui_state
@@ -686,6 +937,13 @@ impl RayTracer {
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+
+        if *self.clear_debug_requested.lock().unwrap() {
+            self.debug_pixel = None;
+            *self.clear_debug_requested.lock().unwrap() = false;
+            println!("Debug pixel cleared");
+        }
+
         Ok(())
     }
 
@@ -699,5 +957,10 @@ impl RayTracer {
 
     pub fn get_current_scene(&self) -> String {
         self.current_scene.lock().unwrap().clone()
+    }
+
+    pub fn set_debug_pixel(&mut self, x: u32, y: u32) {
+        self.debug_pixel = Some((x, y));
+        println!("Debug pixel set to ({}, {})", x, y);
     }
 }

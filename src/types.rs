@@ -146,3 +146,43 @@ impl AABB {
         2.0 * (d.x * d.y + d.y * d.z + d.z * d.x)
     }
 }
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct RayDebugInfo {
+    pub ray_origin: [f32; 3],
+    pub hit: f32,
+    pub ray_direction: [f32; 3],
+    pub distance: f32,
+    pub hit_position: [f32; 3],
+    pub object_id: f32,
+    pub hit_normal: [f32; 3],
+    pub num_steps: f32,
+    pub hit_color: [f32; 3],
+    pub _pad: f32,
+}
+
+impl Default for RayDebugInfo {
+    fn default() -> Self {
+        Self {
+            ray_origin: [0.0; 3],
+            hit: 0.0,
+            ray_direction: [0.0; 3],
+            distance: 0.0,
+            hit_position: [0.0; 3],
+            object_id: -1.0,
+            hit_normal: [0.0; 3],
+            num_steps: 0.0,
+            hit_color: [0.0; 3],
+            _pad: 0.0,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct DebugParams {
+    pub debug_pixel: [u32; 2],
+    pub enabled: u32,
+    pub _pad: u32,
+}

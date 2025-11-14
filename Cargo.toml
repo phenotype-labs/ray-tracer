@@ -3,6 +3,14 @@ name = "ray-tracer"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "ray-tracer"
+path = "src/main.rs"
+
+[[bin]]
+name = "test_ray"
+path = "test_ray.rs"
+
 [dependencies]
 winit = "0.30"
 wgpu = "27"

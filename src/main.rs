@@ -32,6 +32,7 @@ struct App {
     fps_update_timer: f32,
     time: f32,
     start_time: Instant,
+    cursor_position: Option<(f64, f64)>,
 }
 
 impl App {
@@ -47,6 +48,7 @@ impl App {
             fps_update_timer: 0.0,
             time: 0.0,
             start_time: now,
+            cursor_position: None,
         }
     }
 
@@ -119,6 +121,18 @@ impl ApplicationHandler for App {
                     },
                 ..
             } => event_loop.exit(),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.cursor_position = Some((position.x, position.y));
+            }
+            WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: winit::event::MouseButton::Left,
+                ..
+            } => {
+                if let (Some(raytracer), Some(cursor_pos)) = (&mut self.raytracer, self.cursor_position) {
+                    raytracer.set_debug_pixel(cursor_pos.0 as u32, cursor_pos.1 as u32);
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => self.camera.process_keyboard(&event),
             WindowEvent::RedrawRequested => {
                 let now = Instant::now();

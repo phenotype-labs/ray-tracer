@@ -60,6 +60,36 @@ struct HitInfo {
     color: vec3<f32>,
 };
 
+struct TraceResult {
+    color: vec3<f32>,
+    hit: bool,
+    distance: f32,
+    position: vec3<f32>,
+    normal: vec3<f32>,
+    hit_color: vec3<f32>,
+    object_id: f32,
+    num_steps: f32,
+};
+
+struct DebugParams {
+    debug_pixel: vec2<u32>,
+    enabled: u32,
+    _pad: u32,
+};
+
+struct RayDebugInfo {
+    ray_origin: vec3<f32>,
+    hit: f32,
+    ray_direction: vec3<f32>,
+    distance: f32,
+    hit_position: vec3<f32>,
+    object_id: f32,
+    hit_normal: vec3<f32>,
+    num_steps: f32,
+    hit_color: vec3<f32>,
+    _pad: f32,
+};
+
 @group(0) @binding(0)
 var<uniform> camera: Camera;
 
@@ -77,6 +107,12 @@ var<storage, read> boxes: array<Box>;
 
 @group(0) @binding(5)
 var output_texture: texture_storage_2d<rgba8unorm, write>;
+
+@group(0) @binding(6)
+var<uniform> debug_params: DebugParams;
+
+@group(0) @binding(7)
+var<storage, read_write> debug_info: RayDebugInfo;
 
 fn should_cull_lod(box_center: vec3<f32>, box_size: vec3<f32>) -> bool {
     let distance = length(camera.position - box_center);
@@ -200,7 +236,13 @@ fn is_near_grid_boundary(pos: vec3<f32>, cell_size: f32, threshold: f32) -> bool
 }
 
 // DDA ray marching through grid
-fn trace_ray(ray: Ray) -> vec3<f32> {
+fn trace_ray(ray: Ray) -> TraceResult {
+    var result: TraceResult;
+    result.num_steps = 0.0;
+    result.object_id = -1.0;
+    result.hit = false;
+    result.distance = 1e10;
+
     var closest_hit: HitInfo;
     closest_hit.hit = false;
     closest_hit.distance = 1e10;
@@ -211,6 +253,7 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     let num_boxes = arrayLength(&boxes);
     let moving_start = num_boxes - 3u;
     for (var i = moving_start; i < num_boxes; i++) {
+        result.num_steps += 1.0;
         let t_lerp = (sin(camera.time * 2.0) + 1.0) * 0.5;
         let box_center = mix(boxes[i].center0, boxes[i].center1, t_lerp);
         let box_size = boxes[i].half_size * 2.0;
@@ -219,6 +262,7 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
             let hit = intersect_box(ray, boxes[i], camera.time);
             if hit.hit && hit.distance < closest_hit.distance {
                 closest_hit = hit;
+                result.object_id = f32(i);
             }
         }
     }
@@ -228,6 +272,7 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
 
     // Find entry point into grid
     var ray_pos = ray.origin;
+    var t_offset = 0.0;  // Offset from ray.origin to ray_pos
     let bounds_min = grid_meta.bounds_min;
     let bounds_max = grid_meta.bounds_max;
 
@@ -240,9 +285,12 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
         if t_entry < 0.0 {
             // Ray misses grid entirely
             let t = (ray.direction.y + 1.0) * 0.5;
-            return mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+            result.color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+            result.hit = false;
+            return result;
         }
-        ray_pos = ray.origin + ray.direction * (t_entry + 0.001);
+        t_offset = t_entry + 0.001;
+        ray_pos = ray.origin + ray.direction * t_offset;
     }
 
     // DDA setup
@@ -263,19 +311,18 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
         select(0.0, cell_size, step.z > 0)
     );
 
-    // Calculate t values to reach next boundary
+    // Calculate t values to reach next boundary (relative to ray.origin for correct comparison with hit.distance)
     let t_delta = abs(cell_size / ray.direction);
-    var t_max = abs((next_boundary - ray_pos) / ray.direction);
+    var t_max = t_offset + (next_boundary - ray_pos) / ray.direction;
+
+    // Clamp negative values to small positive (handles numerical precision at boundaries)
+    t_max = max(t_max, vec3<f32>(t_offset + 0.00001));
 
     // DDA traversal (max 200 steps to prevent infinite loops)
     for (var i = 0; i < 200; i++) {
-        // IMPORTANT: Check bounds BEFORE using current_cell
-        // (current_cell might have wrapped to huge value if stepping backwards)
-        if current_cell.x >= grid_size.x || current_cell.y >= grid_size.y || current_cell.z >= grid_size.z {
-            break;
-        }
+        result.num_steps += 1.0;
 
-        // Test objects in current cell (safe: bounds checked above)
+        // Test objects in current cell
         let fine_idx = get_fine_index(current_cell);
         let cell_data = fine_cells[fine_idx];
 
@@ -290,6 +337,7 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
                     let hit = intersect_box(ray, box, camera.time);
                     if hit.hit && hit.distance < closest_hit.distance {
                         closest_hit = hit;
+                        result.object_id = f32(obj_idx);
                     }
                 }
             }
@@ -300,15 +348,27 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
             break;
         }
 
-        // Step to next cell along shortest t_max
+        // Step to next cell along shortest t_max, checking bounds before stepping
         if t_max.x < t_max.y && t_max.x < t_max.z {
-            current_cell.x = u32(i32(current_cell.x) + step.x);
+            let next_x = i32(current_cell.x) + step.x;
+            if next_x < 0 || next_x >= i32(grid_size.x) {
+                break;
+            }
+            current_cell.x = u32(next_x);
             t_max.x += t_delta.x;
         } else if t_max.y < t_max.z {
-            current_cell.y = u32(i32(current_cell.y) + step.y);
+            let next_y = i32(current_cell.y) + step.y;
+            if next_y < 0 || next_y >= i32(grid_size.y) {
+                break;
+            }
+            current_cell.y = u32(next_y);
             t_max.y += t_delta.y;
         } else {
-            current_cell.z = u32(i32(current_cell.z) + step.z);
+            let next_z = i32(current_cell.z) + step.z;
+            if next_z < 0 || next_z >= i32(grid_size.z) {
+                break;
+            }
+            current_cell.z = u32(next_z);
             t_max.z += t_delta.z;
         }
     }
@@ -316,7 +376,9 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
     // If no hit, return sky color
     if !closest_hit.hit {
         let t = (ray.direction.y + 1.0) * 0.5;
-        return mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+        result.color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+        result.hit = false;
+        return result;
     }
 
     // Simple lighting
@@ -336,7 +398,14 @@ fn trace_ray(ray: Ray) -> vec3<f32> {
         }
     }
 
-    return final_color;
+    result.color = final_color;
+    result.hit = true;
+    result.distance = closest_hit.distance;
+    result.position = closest_hit.position;
+    result.normal = closest_hit.normal;
+    result.hit_color = closest_hit.color;
+
+    return result;
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -373,8 +442,37 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     ray.direction = ray_dir;
 
     // Trace the ray
-    let color = trace_ray(ray);
+    let trace_result = trace_ray(ray);
+    var final_color = trace_result.color;
+
+    // Check if this is the debug pixel
+    let is_debug_pixel = debug_params.enabled > 0u &&
+                         global_id.x == debug_params.debug_pixel.x &&
+                         global_id.y == debug_params.debug_pixel.y;
+
+    if is_debug_pixel {
+        // Write debug info
+        debug_info.ray_origin = ray.origin;
+        debug_info.ray_direction = ray.direction;
+        debug_info.hit = select(0.0, 1.0, trace_result.hit);
+        debug_info.distance = trace_result.distance;
+        debug_info.hit_position = trace_result.position;
+        debug_info.hit_normal = trace_result.normal;
+        debug_info.hit_color = trace_result.hit_color;
+        debug_info.object_id = trace_result.object_id;
+        debug_info.num_steps = trace_result.num_steps;
+
+        // Highlight the debug pixel with a bright border
+        final_color = vec3<f32>(1.0, 1.0, 0.0); // Yellow highlight
+    } else if debug_params.enabled > 0u {
+        // Draw a 3x3 border around the debug pixel
+        let dx = i32(global_id.x) - i32(debug_params.debug_pixel.x);
+        let dy = i32(global_id.y) - i32(debug_params.debug_pixel.y);
+        if (abs(dx) <= 1 && abs(dy) <= 1) && !(dx == 0 && dy == 0) {
+            final_color = mix(final_color, vec3<f32>(1.0, 1.0, 0.0), 0.5);
+        }
+    }
 
     // Write to output texture
-    textureStore(output_texture, pixel_coords, vec4<f32>(color, 1.0));
+    textureStore(output_texture, pixel_coords, vec4<f32>(final_color, 1.0));
 }
