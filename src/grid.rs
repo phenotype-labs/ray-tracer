@@ -5,6 +5,19 @@ pub const GRID_LEVELS: usize = 4;
 pub const FINEST_CELL_SIZE: f32 = 16.0;
 pub const MAX_OBJECTS_PER_CELL: usize = 256;
 
+fn calculate_grid_dimensions(bounds: &AABB, cell_size: f32) -> [usize; 3] {
+    let extent = bounds.max - bounds.min;
+    [
+        (extent.x / cell_size).ceil() as usize,
+        (extent.y / cell_size).ceil() as usize,
+        (extent.z / cell_size).ceil() as usize,
+    ]
+}
+
+const fn compute_cell_index(x: usize, y: usize, z: usize, grid_size: [usize; 3]) -> usize {
+    x + y * grid_size[0] + z * grid_size[0] * grid_size[1]
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GridMetadata {
@@ -31,13 +44,7 @@ pub struct CoarseGridLevel {
 
 impl CoarseGridLevel {
     pub fn new(bounds: &AABB, cell_size: f32) -> Self {
-        let extent = bounds.max - bounds.min;
-        let grid_size = [
-            (extent.x / cell_size).ceil() as usize,
-            (extent.y / cell_size).ceil() as usize,
-            (extent.z / cell_size).ceil() as usize,
-        ];
-
+        let grid_size = calculate_grid_dimensions(bounds, cell_size);
         let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
 
         Self {
@@ -48,7 +55,7 @@ impl CoarseGridLevel {
     }
 
     pub fn cell_index(&self, x: usize, y: usize, z: usize) -> usize {
-        x + y * self.grid_size[0] + z * self.grid_size[0] * self.grid_size[1]
+        compute_cell_index(x, y, z, self.grid_size)
     }
 
     pub fn increment_cell(&mut self, x: usize, y: usize, z: usize) {
@@ -67,13 +74,7 @@ pub struct FineGridLevel {
 
 impl FineGridLevel {
     pub fn new(bounds: &AABB, cell_size: f32) -> Self {
-        let extent = bounds.max - bounds.min;
-        let grid_size = [
-            (extent.x / cell_size).ceil() as usize,
-            (extent.y / cell_size).ceil() as usize,
-            (extent.z / cell_size).ceil() as usize,
-        ];
-
+        let grid_size = calculate_grid_dimensions(bounds, cell_size);
         let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
 
         Self {
@@ -84,7 +85,7 @@ impl FineGridLevel {
     }
 
     pub fn cell_index(&self, x: usize, y: usize, z: usize) -> usize {
-        x + y * self.grid_size[0] + z * self.grid_size[0] * self.grid_size[1]
+        compute_cell_index(x, y, z, self.grid_size)
     }
 
     pub fn add_object(&mut self, x: usize, y: usize, z: usize, object_id: u32) {

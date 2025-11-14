@@ -1,11 +1,23 @@
 use glam::Vec3;
 use crate::types::BoxData;
 
+fn should_terminate_fractal(depth: u32, size: f32, min_size: f32) -> bool {
+    depth == 0 || size < min_size
+}
+
+fn generate_fractal_hue(color_seed: u32) -> f32 {
+    (color_seed as f32 * 0.618033988749895) % 1.0
+}
+
+fn generate_fractal_color(color_seed: u32, saturation: f32, value: f32) -> [f32; 3] {
+    let hue = generate_fractal_hue(color_seed);
+    hsv_to_rgb(hue, saturation, value)
+}
+
 fn create_menger_sponge(center: Vec3, size: f32, depth: u32, color_seed: u32) -> Vec<BoxData> {
-    if depth == 0 || size < 0.3 {
+    if should_terminate_fractal(depth, size, 0.3) {
         let half = size * 0.5;
-        let hue = (color_seed as f32 * 0.618033988749895) % 1.0;
-        let color = hsv_to_rgb(hue, 0.7, 0.8);
+        let color = generate_fractal_color(color_seed, 0.7, 0.8);
         return vec![BoxData::new(
             (center - Vec3::splat(half)).to_array(),
             (center + Vec3::splat(half)).to_array(),
@@ -45,10 +57,9 @@ fn create_menger_sponge(center: Vec3, size: f32, depth: u32, color_seed: u32) ->
 }
 
 fn create_sierpinski_pyramid(center: Vec3, size: f32, depth: u32, color_seed: u32) -> Vec<BoxData> {
-    if depth == 0 || size < 0.5 {
+    if should_terminate_fractal(depth, size, 0.5) {
         let half = size * 0.5;
-        let hue = (color_seed as f32 * 0.618033988749895) % 1.0;
-        let color = hsv_to_rgb(hue, 0.6, 0.9);
+        let color = generate_fractal_color(color_seed, 0.6, 0.9);
         return vec![BoxData::new(
             (center - Vec3::splat(half)).to_array(),
             (center + Vec3::splat(half)).to_array(),
@@ -81,14 +92,13 @@ fn create_sierpinski_pyramid(center: Vec3, size: f32, depth: u32, color_seed: u3
 }
 
 fn create_fractal_tree(center: Vec3, size: f32, depth: u32, direction: Vec3, angle: f32, color_seed: u32) -> Vec<BoxData> {
-    if depth == 0 || size < 0.3 {
+    if should_terminate_fractal(depth, size, 0.3) {
         return vec![];
     }
 
     let mut boxes = Vec::new();
     let half = size * 0.5;
-    let hue = (color_seed as f32 * 0.618033988749895) % 1.0;
-    let color = hsv_to_rgb(hue, 0.5, 0.7);
+    let color = generate_fractal_color(color_seed, 0.5, 0.7);
 
     boxes.push(BoxData::new(
         (center - Vec3::splat(half * 0.3)).to_array(),

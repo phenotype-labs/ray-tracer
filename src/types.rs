@@ -35,17 +35,25 @@ pub struct BoxData {
 }
 
 impl BoxData {
-    pub const fn new(min: [f32; 3], max: [f32; 3], color: [f32; 3]) -> Self {
-        let center = [
+    const fn calculate_center(min: [f32; 3], max: [f32; 3]) -> [f32; 3] {
+        [
             (min[0] + max[0]) * 0.5,
             (min[1] + max[1]) * 0.5,
             (min[2] + max[2]) * 0.5,
-        ];
-        let half_size = [
+        ]
+    }
+
+    const fn calculate_half_size(min: [f32; 3], max: [f32; 3]) -> [f32; 3] {
+        [
             (max[0] - min[0]) * 0.5,
             (max[1] - min[1]) * 0.5,
             (max[2] - min[2]) * 0.5,
-        ];
+        ]
+    }
+
+    pub const fn new(min: [f32; 3], max: [f32; 3], color: [f32; 3]) -> Self {
+        let center = Self::calculate_center(min, max);
+        let half_size = Self::calculate_half_size(min, max);
         Self {
             min,
             is_moving: 0.0,
@@ -63,16 +71,8 @@ impl BoxData {
     }
 
     pub const fn new_reflective(min: [f32; 3], max: [f32; 3], color: [f32; 3], reflectivity: f32) -> Self {
-        let center = [
-            (min[0] + max[0]) * 0.5,
-            (min[1] + max[1]) * 0.5,
-            (min[2] + max[2]) * 0.5,
-        ];
-        let half_size = [
-            (max[0] - min[0]) * 0.5,
-            (max[1] - min[1]) * 0.5,
-            (max[2] - min[2]) * 0.5,
-        ];
+        let center = Self::calculate_center(min, max);
+        let half_size = Self::calculate_half_size(min, max);
         Self {
             min,
             is_moving: 0.0,

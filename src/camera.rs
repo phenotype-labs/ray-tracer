@@ -48,6 +48,10 @@ pub struct Camera {
 }
 
 impl Camera {
+    fn calculate_lod_factor(screen_height: f32, fov: f32) -> f32 {
+        screen_height / (2.0 * (fov / 2.0).tan())
+    }
+
     pub fn new() -> Self {
         let scene_name = std::env::var("SCENE").unwrap_or_else(|_| "fractal".to_string());
 
@@ -94,7 +98,7 @@ impl Camera {
     }
 
     pub fn to_uniform(&self, time: f32, screen_height: f32, fov: f32, show_grid: bool) -> CameraUniform {
-        let lod_factor = screen_height / (2.0 * (fov / 2.0).tan());
+        let lod_factor = Self::calculate_lod_factor(screen_height, fov);
         let min_pixel_size = 2.0;
 
         CameraUniform {
