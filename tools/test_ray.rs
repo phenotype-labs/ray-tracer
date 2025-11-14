@@ -1,34 +1,5 @@
 use glam::Vec3;
-
-fn world_to_cell(pos: Vec3, bounds_min: Vec3, cell_size: f32) -> (i32, i32, i32) {
-    let rel_pos = pos - bounds_min;
-    (
-        (rel_pos.x / cell_size).floor() as i32,
-        (rel_pos.y / cell_size).floor() as i32,
-        (rel_pos.z / cell_size).floor() as i32,
-    )
-}
-
-fn intersect_aabb(ray_origin: Vec3, ray_dir: Vec3, box_min: Vec3, box_max: Vec3) -> f32 {
-    let t_min = (box_min - ray_origin) / ray_dir;
-    let t_max = (box_max - ray_origin) / ray_dir;
-
-    let t1 = t_min.min(t_max);
-    let t2 = t_min.max(t_max);
-
-    let t_near = t1.x.max(t1.y).max(t1.z);
-    let t_far = t2.x.min(t2.y).min(t2.z);
-
-    if t_near > t_far || t_far < 0.0 {
-        return -1.0;
-    }
-
-    if t_near < 0.0 {
-        t_far
-    } else {
-        t_near
-    }
-}
+use ray_tracer::math::{world_to_cell, intersect_aabb};
 
 fn trace_ray_test(origin: Vec3, direction: Vec3, bounds_min: Vec3, bounds_max: Vec3, cell_size: f32, grid_size: (u32, u32, u32)) {
     println!("\n=== RAY TRACE TEST ===");
@@ -143,18 +114,44 @@ fn trace_ray_test(origin: Vec3, direction: Vec3, bounds_min: Vec3, bounds_max: V
 }
 
 fn main() {
-    let origin = Vec3::new(-28.62, 28.00, -4.03);
-    let direction = Vec3::new(-0.867, 0.030, 0.497).normalize();
     let bounds_min = Vec3::new(-201.0, -2.0, -201.0);
     let bounds_max = Vec3::new(201.0, 49.2, 201.0);
     let cell_size = 16.0;
-    let grid_size = (27, 5, 27);
+    let grid_size = (
+        ((bounds_max.x - bounds_min.x) / cell_size).ceil() as u32,
+        ((bounds_max.y - bounds_min.y) / cell_size).ceil() as u32,
+        ((bounds_max.z - bounds_min.z) / cell_size).ceil() as u32,
+    );
 
-    println!("Testing MISS ray (should hit wall at x=-50):");
+    // Test case 1: Original MISS case
+    let origin = Vec3::new(-28.62, 28.00, -4.03);
+    let direction = Vec3::new(-0.867, 0.030, 0.497).normalize();
+    println!("Testing original MISS ray (should hit wall at x=-50):");
     trace_ray_test(origin, direction, bounds_min, bounds_max, cell_size, grid_size);
 
-    let origin2 = Vec3::new(-28.62, 28.00, -4.03);
-    let direction2 = Vec3::new(-0.867, 0.030, 0.497).normalize();
-    println!("\nTesting HIT ray:");
+    // Test case 2: New MISS case from user
+    let origin2 = Vec3::new(0.00, 5.00, 0.00);
+    let direction2 = Vec3::new(-0.636, 0.475, 0.608).normalize();
+    println!("\n\nTesting new MISS ray from origin (0, 5, 0):");
     trace_ray_test(origin2, direction2, bounds_min, bounds_max, cell_size, grid_size);
+
+    // Calculate expected hit for test case 2
+    println!("\n=== EXPECTED HIT ANALYSIS ===");
+    let t_west = (-50.0 - origin2.x) / direction2.x;
+    let hit = origin2 + direction2 * t_west;
+    println!("West wall hit at t={:.2}: ({:.2}, {:.2}, {:.2})", t_west, hit.x, hit.y, hit.z);
+
+    // Check which wall box
+    let stride = 2.2; // box_size + spacing
+    let layer = (hit.y / stride).floor() as i32;
+    let segment = ((hit.z + 50.0) / stride).floor() as i32;
+    println!("Wall box: layer={}, segment={}", layer, segment);
+
+    let box_min = Vec3::new(-52.0, layer as f32 * stride, -50.0 + segment as f32 * stride);
+    let box_max = Vec3::new(-50.0, layer as f32 * stride + 2.0, -50.0 + segment as f32 * stride + 2.0);
+    println!("Box bounds: ({:.2}, {:.2}, {:.2}) to ({:.2}, {:.2}, {:.2})",
+             box_min.x, box_min.y, box_min.z, box_max.x, box_max.y, box_max.z);
+
+    let t_box = intersect_aabb(origin2, direction2, box_min, box_max);
+    println!("Direct box intersection: t={:.2} {}", t_box, if t_box > 0.0 { "HIT" } else { "MISS" });
 }

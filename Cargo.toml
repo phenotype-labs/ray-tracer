@@ -13,7 +13,11 @@ path = "src/main.rs"
 
 [[bin]]
 name = "test_ray"
-path = "test_ray.rs"
+path = "tools/test_ray.rs"
+
+[[bin]]
+name = "test_specific_ray"
+path = "tools/test_specific_ray.rs"
 
 [dependencies]
 winit = "0.30"

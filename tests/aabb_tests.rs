@@ -1,5 +1,5 @@
 use glam::Vec3;
-use ray_tracer::types::AABB;
+use ray_tracer::math::AABB;
 
 #[cfg(test)]
 mod aabb_tests {

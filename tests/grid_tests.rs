@@ -1,6 +1,6 @@
 use glam::Vec3;
 use ray_tracer::grid::{CoarseGridLevel, FineGridLevel, FINEST_CELL_SIZE};
-use ray_tracer::types::AABB;
+use ray_tracer::math::AABB;
 
 #[cfg(test)]
 mod coarse_grid_tests {
@@ -165,7 +165,7 @@ mod fine_grid_tests {
 
         let mut grid = FineGridLevel::new(&bounds, FINEST_CELL_SIZE);
 
-        // Add 100 objects (more than MAX_OBJECTS_PER_CELL which is 64)
+        // Add 100 objects (less than MAX_OBJECTS_PER_CELL which is 256)
         for i in 0..100 {
             grid.add_object(0, 0, 0, i);
         }
@@ -173,8 +173,8 @@ mod fine_grid_tests {
         let idx_origin = grid.cell_index(0, 0, 0);
         assert_eq!(
             grid.cells[idx_origin].len(),
-            64,
-            "Cell should be capped at 64 objects"
+            100,
+            "Cell should hold all 100 objects (under the 256 limit)"
         );
     }
 

@@ -1,4 +1,5 @@
-use crate::types::{BoxData, AABB};
+use crate::types::BoxData;
+use crate::math::AABB;
 use glam::Vec3;
 
 pub const GRID_LEVELS: usize = 4;

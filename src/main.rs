@@ -1,8 +1,4 @@
-mod types;
-mod grid;
-mod camera;
-mod scene;
-mod renderer;
+use ray_tracer::{camera, renderer};
 
 use std::sync::Arc;
 use std::time::Instant;
