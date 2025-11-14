@@ -3,7 +3,7 @@ use glam::Vec3;
 
 pub const GRID_LEVELS: usize = 4;
 pub const FINEST_CELL_SIZE: f32 = 16.0;
-pub const MAX_OBJECTS_PER_CELL: usize = 64;
+pub const MAX_OBJECTS_PER_CELL: usize = 256;
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -18,7 +18,7 @@ pub struct GridMetadata {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FineCellData {
-    pub object_indices: [u32; MAX_OBJECTS_PER_CELL],
+    pub object_indices: [u32; 256],
     pub count: u32,
     pub _pad: [u32; 3],
 }
@@ -33,9 +33,9 @@ impl CoarseGridLevel {
     pub fn new(bounds: &AABB, cell_size: f32) -> Self {
         let extent = bounds.max - bounds.min;
         let grid_size = [
-            (extent.x / cell_size).ceil() as usize + 1,
-            (extent.y / cell_size).ceil() as usize + 1,
-            (extent.z / cell_size).ceil() as usize + 1,
+            (extent.x / cell_size).ceil() as usize,
+            (extent.y / cell_size).ceil() as usize,
+            (extent.z / cell_size).ceil() as usize,
         ];
 
         let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
@@ -69,9 +69,9 @@ impl FineGridLevel {
     pub fn new(bounds: &AABB, cell_size: f32) -> Self {
         let extent = bounds.max - bounds.min;
         let grid_size = [
-            (extent.x / cell_size).ceil() as usize + 1,
-            (extent.y / cell_size).ceil() as usize + 1,
-            (extent.z / cell_size).ceil() as usize + 1,
+            (extent.x / cell_size).ceil() as usize,
+            (extent.y / cell_size).ceil() as usize,
+            (extent.z / cell_size).ceil() as usize,
         ];
 
         let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
@@ -91,6 +91,9 @@ impl FineGridLevel {
         let idx = self.cell_index(x, y, z);
         if self.cells[idx].len() < MAX_OBJECTS_PER_CELL {
             self.cells[idx].push(object_id);
+        } else {
+            eprintln!("WARNING: Cell ({}, {}, {}) exceeded MAX_OBJECTS_PER_CELL ({}), dropping object {}",
+                     x, y, z, MAX_OBJECTS_PER_CELL, object_id);
         }
     }
 }
@@ -159,6 +162,21 @@ impl HierarchicalGrid {
             .filter(|cell| !cell.is_empty())
             .count();
 
+        let max_objects_in_cell = grid
+            .fine_level
+            .cells
+            .iter()
+            .map(|cell| cell.len())
+            .max()
+            .unwrap_or(0);
+
+        let cells_at_capacity = grid
+            .fine_level
+            .cells
+            .iter()
+            .filter(|cell| cell.len() >= MAX_OBJECTS_PER_CELL)
+            .count();
+
         println!("Grid stats:");
         println!("  Coarse cells total: {}", total_coarse_cells);
         println!(
@@ -166,6 +184,8 @@ impl HierarchicalGrid {
             occupied_fine_cells,
             grid.fine_level.cells.len()
         );
+        println!("  Max objects in a cell: {}", max_objects_in_cell);
+        println!("  Cells at capacity: {}", cells_at_capacity);
 
         grid
     }

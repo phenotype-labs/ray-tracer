@@ -25,7 +25,7 @@ pub struct BoxData {
     pub max: [f32; 3],
     pub _pad2: f32,
     pub color: [f32; 3],
-    pub _pad3: f32,
+    pub reflectivity: f32,
     pub center0: [f32; 3],
     pub _pad4: f32,
     pub center1: [f32; 3],
@@ -52,7 +52,34 @@ impl BoxData {
             max,
             _pad2: 0.0,
             color,
-            _pad3: 0.0,
+            reflectivity: 0.0,
+            center0: center,
+            _pad4: 0.0,
+            center1: center,
+            _pad5: 0.0,
+            half_size,
+            _pad6: 0.0,
+        }
+    }
+
+    pub const fn new_reflective(min: [f32; 3], max: [f32; 3], color: [f32; 3], reflectivity: f32) -> Self {
+        let center = [
+            (min[0] + max[0]) * 0.5,
+            (min[1] + max[1]) * 0.5,
+            (min[2] + max[2]) * 0.5,
+        ];
+        let half_size = [
+            (max[0] - min[0]) * 0.5,
+            (max[1] - min[1]) * 0.5,
+            (max[2] - min[2]) * 0.5,
+        ];
+        Self {
+            min,
+            is_moving: 0.0,
+            max,
+            _pad2: 0.0,
+            color,
+            reflectivity,
             center0: center,
             _pad4: 0.0,
             center1: center,
@@ -69,7 +96,7 @@ impl BoxData {
             max,
             _pad2: 0.0,
             color,
-            _pad3: 0.0,
+            reflectivity: 0.0,
             center0,
             _pad4: 0.0,
             center1,

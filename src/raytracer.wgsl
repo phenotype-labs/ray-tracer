@@ -67,7 +67,18 @@ fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
         return -1.0;
     }
 
-    return select(t_near, t_far, t_near < 0.0);
+    // If ray origin is inside/behind the box (t_near < 0)
+    if t_near < 0.0 {
+        // Only return t_far if it's a meaningful distance (not on surface)
+        // This prevents self-intersection when ray is on surface pointing out
+        if t_far > 0.001 {
+            return t_far;
+        } else {
+            return -1.0;
+        }
+    }
+
+    return t_near;
 }
 
 // Ray-box intersection (detailed hit info)

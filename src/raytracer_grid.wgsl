@@ -1,7 +1,7 @@
 // Hierarchical Grid Ray Tracer
 
 const GRID_LEVELS: u32 = 4u;
-const MAX_OBJECTS_PER_CELL: u32 = 64u;
+const MAX_OBJECTS_PER_CELL: u32 = 256u;
 
 struct Camera {
     position: vec3<f32>,
@@ -24,7 +24,7 @@ struct Box {
     max: vec3<f32>,
     _pad2: f32,
     color: vec3<f32>,
-    _pad3: f32,
+    reflectivity: f32,
     center0: vec3<f32>,
     _pad4: f32,
     center1: vec3<f32>,
@@ -42,7 +42,7 @@ struct GridMetadata {
 };
 
 struct FineCellData {
-    object_indices: array<u32, 64>,
+    object_indices: array<u32, 256>,
     count: u32,
     _pad: array<u32, 3>,
 };
@@ -58,6 +58,7 @@ struct HitInfo {
     position: vec3<f32>,
     normal: vec3<f32>,
     color: vec3<f32>,
+    reflectivity: f32,
 };
 
 struct TraceResult {
@@ -69,6 +70,7 @@ struct TraceResult {
     hit_color: vec3<f32>,
     object_id: f32,
     num_steps: f32,
+    reflectivity: f32,
 };
 
 struct DebugParams {
@@ -139,7 +141,18 @@ fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
         return -1.0;
     }
 
-    return select(t_near, t_far, t_near < 0.0);
+    // If ray origin is inside/behind the box (t_near < 0)
+    if t_near < 0.0 {
+        // Only return t_far if it's a meaningful distance (not on surface)
+        // This prevents self-intersection when ray is on surface pointing out
+        if t_far > 0.001 {
+            return t_far;
+        } else {
+            return -1.0;
+        }
+    }
+
+    return t_near;
 }
 
 // Ray-box intersection (detailed hit info)
@@ -182,6 +195,7 @@ fn intersect_box(ray: Ray, box: Box, time: f32) -> HitInfo {
     }
 
     hit.color = box.color;
+    hit.reflectivity = box.reflectivity;
 
     return hit;
 }
@@ -242,6 +256,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
     result.object_id = -1.0;
     result.hit = false;
     result.distance = 1e10;
+    result.reflectivity = 0.0;
 
     var closest_hit: HitInfo;
     closest_hit.hit = false;
@@ -291,6 +306,11 @@ fn trace_ray(ray: Ray) -> TraceResult {
         }
         t_offset = t_entry + 0.001;
         ray_pos = ray.origin + ray.direction * t_offset;
+
+        // Clamp ray_pos to be safely inside grid bounds to avoid floating-point precision issues
+        // that would cause world_to_cell to clamp negative coordinates to 0
+        let epsilon = 0.0001;
+        ray_pos = clamp(ray_pos, bounds_min + vec3<f32>(epsilon), bounds_max - vec3<f32>(epsilon));
     }
 
     // DDA setup
@@ -404,6 +424,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
     result.position = closest_hit.position;
     result.normal = closest_hit.normal;
     result.hit_color = closest_hit.color;
+    result.reflectivity = closest_hit.reflectivity;
 
     return result;
 }
@@ -441,9 +462,50 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     ray.origin = camera.position;
     ray.direction = ray_dir;
 
-    // Trace the ray
-    let trace_result = trace_ray(ray);
-    var final_color = trace_result.color;
+    // Trace the ray with multiple reflection bounces
+    const MAX_BOUNCES: u32 = 8u;
+    var accumulated_color = vec3<f32>(0.0);
+    var current_ray = ray;
+    var reflection_multiplier = 1.0;
+
+    // Store first bounce for debug info
+    var first_trace_result: TraceResult;
+
+    for (var bounce = 0u; bounce < MAX_BOUNCES; bounce++) {
+        let trace_result = trace_ray(current_ray);
+
+        // Store first bounce for debug
+        if bounce == 0u {
+            first_trace_result = trace_result;
+        }
+
+        if !trace_result.hit {
+            // Hit sky - add sky color contribution and stop
+            accumulated_color += trace_result.color * reflection_multiplier;
+            break;
+        }
+
+        // Add this surface's diffuse (non-reflected) contribution
+        let surface_contribution = trace_result.color * (1.0 - trace_result.reflectivity);
+        accumulated_color += surface_contribution * reflection_multiplier;
+
+        // If no reflectivity, we're done
+        if trace_result.reflectivity < 0.01 {
+            break;
+        }
+
+        // Update multiplier for next bounce
+        reflection_multiplier *= trace_result.reflectivity;
+
+        // Calculate reflection ray for next bounce
+        let reflect_dir = reflect(current_ray.direction, trace_result.normal);
+        let reflect_origin = trace_result.position + trace_result.normal * 0.001;
+
+        current_ray.origin = reflect_origin;
+        current_ray.direction = reflect_dir;
+    }
+
+    var final_color = accumulated_color;
 
     // Check if this is the debug pixel
     let is_debug_pixel = debug_params.enabled > 0u &&
@@ -454,13 +516,13 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         // Write debug info
         debug_info.ray_origin = ray.origin;
         debug_info.ray_direction = ray.direction;
-        debug_info.hit = select(0.0, 1.0, trace_result.hit);
-        debug_info.distance = trace_result.distance;
-        debug_info.hit_position = trace_result.position;
-        debug_info.hit_normal = trace_result.normal;
-        debug_info.hit_color = trace_result.hit_color;
-        debug_info.object_id = trace_result.object_id;
-        debug_info.num_steps = trace_result.num_steps;
+        debug_info.hit = select(0.0, 1.0, first_trace_result.hit);
+        debug_info.distance = first_trace_result.distance;
+        debug_info.hit_position = first_trace_result.position;
+        debug_info.hit_normal = first_trace_result.normal;
+        debug_info.hit_color = first_trace_result.hit_color;
+        debug_info.object_id = first_trace_result.object_id;
+        debug_info.num_steps = first_trace_result.num_steps;
 
         // Highlight the debug pixel with a bright border
         final_color = vec3<f32>(1.0, 1.0, 0.0); // Yellow highlight
