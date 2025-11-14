@@ -191,3 +191,88 @@ pub struct DebugParams {
     pub enabled: u32,
     pub _pad: u32,
 }
+
+/// Triangle data for ray tracing with UV coordinates
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TriangleData {
+    pub v0: [f32; 3],
+    pub material_id: f32,
+    pub v1: [f32; 3],
+    pub _pad1: f32,
+    pub v2: [f32; 3],
+    pub _pad2: f32,
+    pub uv0: [f32; 2],
+    pub uv1: [f32; 2],
+    pub uv2: [f32; 2],
+    pub _pad3: [f32; 2],
+}
+
+impl TriangleData {
+    pub fn new(
+        v0: [f32; 3],
+        v1: [f32; 3],
+        v2: [f32; 3],
+        uv0: [f32; 2],
+        uv1: [f32; 2],
+        uv2: [f32; 2],
+        material_id: u32,
+    ) -> Self {
+        Self {
+            v0,
+            material_id: material_id as f32,
+            v1,
+            _pad1: 0.0,
+            v2,
+            _pad2: 0.0,
+            uv0,
+            uv1,
+            uv2,
+            _pad3: [0.0, 0.0],
+        }
+    }
+
+    pub fn bounds(&self) -> AABB {
+        let v0 = Vec3::from_array(self.v0);
+        let v1 = Vec3::from_array(self.v1);
+        let v2 = Vec3::from_array(self.v2);
+
+        let min = v0.min(v1).min(v2);
+        let max = v0.max(v1).max(v2);
+
+        AABB { min, max }
+    }
+}
+
+/// Material data for textures and colors
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct MaterialData {
+    pub base_color: [f32; 4],
+    pub texture_index: i32,  // -1 means no texture
+    pub metallic: f32,
+    pub roughness: f32,
+    pub _pad: f32,
+}
+
+impl MaterialData {
+    pub fn new_color(color: [f32; 4]) -> Self {
+        Self {
+            base_color: color,
+            texture_index: -1,
+            metallic: 0.0,
+            roughness: 1.0,
+            _pad: 0.0,
+        }
+    }
+
+    pub fn new_textured(color: [f32; 4], texture_index: u32) -> Self {
+        Self {
+            base_color: color,
+            texture_index: texture_index as i32,
+            metallic: 0.0,
+            roughness: 1.0,
+            _pad: 0.0,
+        }
+    }
+}

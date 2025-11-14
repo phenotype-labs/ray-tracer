@@ -19,6 +19,10 @@ path = "tools/test_ray.rs"
 name = "test_specific_ray"
 path = "tools/test_specific_ray.rs"
 
+[[bin]]
+name = "triangle-tracer"
+path = "src/triangle_main.rs"
+
 [dependencies]
 winit = "0.30"
 wgpu = "27"
@@ -29,3 +33,5 @@ env_logger = "0.11"
 egui = "0.33.0"
 egui-wgpu = "0.33.0"
 egui-winit = "0.33.0"
+gltf = "1.4"
+anyhow = "1.0"
