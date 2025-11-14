@@ -56,6 +56,7 @@ impl Camera {
         let scene_name = std::env::var("SCENE").unwrap_or_else(|_| "fractal".to_string());
 
         let (position, yaw, pitch) = match scene_name.as_str() {
+            "composed" => (Vec3::new(0.0, 40.0, 40.0), std::f32::consts::PI, -0.7),
             "walls" => (Vec3::new(0.0, 5.0, 0.0), 0.0, 0.0),
             "tunnel" => (Vec3::new(0.0, 0.0, 20.0), std::f32::consts::PI, 0.0),
             _ => (Vec3::new(0.0, 8.0, 15.0), std::f32::consts::PI, -0.6),

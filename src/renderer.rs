@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
-use crate::scenes::{create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene};
+use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene};
 use crate::types::{RayDebugInfo, DebugParams};
 
 pub const WORKGROUP_SIZE: u32 = 8;
@@ -56,6 +56,7 @@ impl RayTracer {
         println!("Loading scene: {}", scene_name);
 
         let boxes = match scene_name.as_str() {
+            "composed" => create_composed_scene(),
             "walls" => create_walls_scene(),
             "tunnel" => create_tunnel_scene(),
             "default" => create_default_scene(),
@@ -739,6 +740,10 @@ impl RayTracer {
                         }
                         if ui.button("Default Scene").clicked() {
                             *scene = "default".to_string();
+                            changed = true;
+                        }
+                        if ui.button("Composed Scene").clicked() {
+                            *scene = "composed".to_string();
                             changed = true;
                         }
 
