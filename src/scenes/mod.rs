@@ -15,4 +15,5 @@ pub use tunnel::create_tunnel_scene;
 pub use default::create_default_scene;
 pub use reflected::create_reflected_scene;
 pub use gltf::{create_gltf_scene, create_gltf_triangles};
+pub use crate::loaders::gltf_triangles::TextureData;
 pub use pyramid::{create_pyramid_scene, create_pyramid_triangles};

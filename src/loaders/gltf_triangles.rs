@@ -80,6 +80,18 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
                 }
                 rgba
             }
+            gltf::image::Format::R8G8 => {
+                // Convert RG (2 channels) to RGBA
+                // R8G8 is typically used for normal maps or other 2-channel data
+                let mut rgba = Vec::with_capacity(image.pixels.len() / 2 * 4);
+                for rg in image.pixels.chunks(2) {
+                    rgba.push(rg[0]); // R
+                    rgba.push(rg[1]); // G
+                    rgba.push(0);     // B (set to 0)
+                    rgba.push(255);   // Alpha
+                }
+                rgba
+            }
             _ => {
                 println!("    Warning: Unsupported texture format {:?}, using default", image.format);
                 vec![255; (image.width * image.height * 4) as usize]

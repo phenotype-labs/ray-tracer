@@ -134,6 +134,8 @@ struct SceneConfig {
 @group(0) @binding(8) var output_texture: texture_storage_2d<rgba8unorm, write>;
 @group(0) @binding(9) var<uniform> debug_params: DebugParams;
 @group(0) @binding(10) var<storage, read_write> debug_info: RayDebugInfo;
+@group(0) @binding(11) var texture_array: texture_2d_array<f32>;
+@group(0) @binding(12) var texture_sampler: sampler;
 
 // LOD culling
 fn should_cull_lod(object_center: vec3<f32>, object_size: vec3<f32>) -> bool {
@@ -261,7 +263,30 @@ fn intersect_triangle(ray: Ray, tri: Triangle, tri_idx: u32) -> HitInfo {
         let mat_id = u32(tri.material_id);
         if mat_id < arrayLength(&materials) {
             let material = materials[mat_id];
-            hit.color = material.base_color.rgb;
+
+            // Check if material has a texture
+            if material.texture_index >= 0 {
+                // Calculate UV coordinates using barycentric coordinates
+                // u and v from intersection are the barycentric coords for v1 and v2
+                let w = 1.0 - u - v;  // barycentric coord for v0
+                let uv = tri.uv0 * w + tri.uv1 * u + tri.uv2 * v;
+
+                // Sample the texture from the array
+                let tex_color = textureSampleLevel(
+                    texture_array,
+                    texture_sampler,
+                    uv,
+                    material.texture_index,
+                    0.0  // mip level
+                );
+
+                // Multiply texture color with base color
+                hit.color = tex_color.rgb * material.base_color.rgb;
+            } else {
+                // No texture, just use base color
+                hit.color = material.base_color.rgb;
+            }
+
             // Use metallic as reflectivity for now
             hit.reflectivity = material.metallic;
         } else {

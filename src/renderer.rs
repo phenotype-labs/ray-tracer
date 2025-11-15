@@ -68,7 +68,7 @@ impl RayTracer {
         let num_boxes = boxes.len();
 
         // Load triangles and materials for triangle-based scenes
-        let (triangles, materials) = if scene_name == "pyramid" {
+        let (triangles, materials, textures) = if scene_name == "pyramid" {
             let tris = create_pyramid_triangles();
             let num_tris = tris.len();
 
@@ -82,11 +82,12 @@ impl RayTracer {
             ];
 
             println!("Loaded {} triangles and {} materials for pyramid", num_tris, mats.len());
-            (tris, mats)
+            (tris, mats, vec![])
         } else if scene_name == "gltf" {
-            create_gltf_triangles()
+            let (tris, mats, texs) = create_gltf_triangles();
+            (tris, mats, texs)
         } else {
-            (vec![], vec![])
+            (vec![], vec![], vec![])
         };
 
         println!("Building Hierarchical Grid...");
@@ -139,6 +140,104 @@ impl RayTracer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // Create GPU textures from TextureData
+        let texture_array_view = if textures.is_empty() {
+            // Create a 1x1 white dummy texture if no textures exist
+            let dummy_data = vec![255u8, 255u8, 255u8, 255u8];
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Dummy Texture"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            queue.write_texture(
+                texture.as_image_copy(),
+                &dummy_data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4),
+                    rows_per_image: Some(1),
+                },
+                wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+            );
+            texture.create_view(&wgpu::TextureViewDescriptor::default())
+        } else {
+            // Create texture array to hold all textures
+            let max_width = textures.iter().map(|t| t.width).max().unwrap_or(1);
+            let max_height = textures.iter().map(|t| t.height).max().unwrap_or(1);
+
+            let texture_array = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Texture Array"),
+                size: wgpu::Extent3d {
+                    width: max_width,
+                    height: max_height,
+                    depth_or_array_layers: textures.len() as u32,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+
+            // Upload each texture to its layer
+            for (i, tex_data) in textures.iter().enumerate() {
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture_array,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d {
+                            x: 0,
+                            y: 0,
+                            z: i as u32,
+                        },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &tex_data.data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * tex_data.width),
+                        rows_per_image: Some(tex_data.height),
+                    },
+                    wgpu::Extent3d {
+                        width: tex_data.width,
+                        height: tex_data.height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+
+            println!("Created texture array: {}x{} with {} layers", max_width, max_height, textures.len());
+            texture_array.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
+        };
+
+        // Create texture sampler
+        let texture_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         // Create scene config buffer
         let scene_config = SceneConfig::new(num_boxes, triangles.len());
         let scene_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -179,6 +278,8 @@ impl RayTracer {
             &output_texture_view,
             &debug_params_buffer,
             &debug_info_buffer,
+            &texture_array_view,
+            &texture_sampler,
         );
 
         let (render_pipeline, render_bind_group) =
@@ -329,6 +430,8 @@ impl RayTracer {
         output_texture_view: &wgpu::TextureView,
         debug_params_buffer: &wgpu::Buffer,
         debug_info_buffer: &wgpu::Buffer,
+        texture_array_view: &wgpu::TextureView,
+        texture_sampler: &wgpu::Sampler,
     ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Unified Compute Shader"),
@@ -458,6 +561,24 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 11: Texture Array
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Binding 12: Texture Sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
             label: Some("unified_bind_group_layout"),
         });
@@ -508,6 +629,14 @@ impl RayTracer {
                 wgpu::BindGroupEntry {
                     binding: 10,
                     resource: debug_info_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(texture_array_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 12,
+                    resource: wgpu::BindingResource::Sampler(texture_sampler),
                 },
             ],
             label: Some("unified_bind_group"),

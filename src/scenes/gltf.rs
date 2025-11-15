@@ -1,5 +1,5 @@
 use crate::loaders::gltf::load_gltf_with_animation;
-use crate::loaders::gltf_triangles::load_gltf_triangles;
+use crate::loaders::gltf_triangles::{load_gltf_triangles, TextureData};
 use crate::types::{BoxData, TriangleData, MaterialData};
 
 /// Creates a scene by loading a glTF file
@@ -44,23 +44,23 @@ pub fn create_gltf_scene() -> Vec<BoxData> {
     }
 }
 
-/// Loads triangles and materials from a glTF file
-/// Returns a tuple of (triangles, materials)
-pub fn create_gltf_triangles() -> (Vec<TriangleData>, Vec<MaterialData>) {
+/// Loads triangles, materials, and textures from a glTF file
+/// Returns a tuple of (triangles, materials, textures)
+pub fn create_gltf_triangles() -> (Vec<TriangleData>, Vec<MaterialData>, Vec<TextureData>) {
     let file_path =
         std::env::var("GLTF_FILE").unwrap_or_else(|_| "models/no_animation/scene.gltf".to_string());
 
     match load_gltf_triangles(&file_path) {
         Ok(scene) => {
-            println!("Successfully loaded {} triangles and {} materials from glTF file",
-                scene.triangles.len(), scene.materials.len());
-            (scene.triangles, scene.materials)
+            println!("Successfully loaded {} triangles, {} materials, and {} textures from glTF file",
+                scene.triangles.len(), scene.materials.len(), scene.textures.len());
+            (scene.triangles, scene.materials, scene.textures)
         }
         Err(e) => {
             eprintln!("Failed to load glTF triangles: {}", e);
             eprintln!("Error details: {:?}", e);
             // Return empty vecs on error
-            (vec![], vec![])
+            (vec![], vec![], vec![])
         }
     }
 }
