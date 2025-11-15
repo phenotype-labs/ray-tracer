@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
-use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene, create_pyramid_scene, create_pyramid_triangles};
+use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene, create_gltf_triangles, create_pyramid_scene, create_pyramid_triangles};
 use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
 
 pub const WORKGROUP_SIZE: u32 = 8;
@@ -83,6 +83,8 @@ impl RayTracer {
 
             println!("Loaded {} triangles and {} materials for pyramid", num_tris, mats.len());
             (tris, mats)
+        } else if scene_name == "gltf" {
+            create_gltf_triangles()
         } else {
             (vec![], vec![])
         };
