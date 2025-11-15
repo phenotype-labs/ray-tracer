@@ -4,7 +4,7 @@ use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
 use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene};
-use crate::types::{RayDebugInfo, DebugParams};
+use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
 
 pub const WORKGROUP_SIZE: u32 = 8;
 
@@ -94,6 +94,40 @@ impl RayTracer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // Create empty triangle buffer for unified shader (will be populated when loading triangle scenes)
+        let triangles: Vec<TriangleData> = vec![];
+        let dummy_triangle = [TriangleData::new([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 2], [0.0; 2], [0.0; 2], 0)];
+        let triangle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Triangle Buffer"),
+            contents: if triangles.is_empty() {
+                bytemuck::cast_slice(&dummy_triangle)
+            } else {
+                bytemuck::cast_slice(&triangles)
+            },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Create empty material buffer for unified shader
+        let materials: Vec<MaterialData> = vec![];
+        let dummy_material = [MaterialData::new_color([1.0, 1.0, 1.0, 1.0])];
+        let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Material Buffer"),
+            contents: if materials.is_empty() {
+                bytemuck::cast_slice(&dummy_material)
+            } else {
+                bytemuck::cast_slice(&materials)
+            },
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+
+        // Create scene config buffer
+        let scene_config = SceneConfig::new(num_boxes, 0);
+        let scene_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Scene Config Buffer"),
+            contents: bytemuck::cast_slice(&[scene_config]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
         let camera_buffer = Self::create_camera_buffer(&device);
         let (_output_texture, output_texture_view) = Self::create_output_texture(&device, size);
 
@@ -120,6 +154,9 @@ impl RayTracer {
             &coarse_buffer,
             &fine_buffer,
             &box_buffer,
+            &triangle_buffer,
+            &material_buffer,
+            &scene_config_buffer,
             &output_texture_view,
             &debug_params_buffer,
             &debug_info_buffer,
@@ -267,17 +304,21 @@ impl RayTracer {
         coarse_buffer: &wgpu::Buffer,
         fine_buffer: &wgpu::Buffer,
         box_buffer: &wgpu::Buffer,
+        triangle_buffer: &wgpu::Buffer,
+        material_buffer: &wgpu::Buffer,
+        scene_config_buffer: &wgpu::Buffer,
         output_texture_view: &wgpu::TextureView,
         debug_params_buffer: &wgpu::Buffer,
         debug_info_buffer: &wgpu::Buffer,
     ) -> (wgpu::ComputePipeline, wgpu::BindGroup) {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Grid Compute Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("raytracer_grid.wgsl").into()),
+            label: Some("Unified Compute Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("raytracer_unified.wgsl").into()),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
+                // Binding 0: Camera
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -288,6 +329,7 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 1: Grid Metadata
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -298,6 +340,7 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 2: Coarse Counts
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -308,6 +351,7 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 3: Fine Cells
                 wgpu::BindGroupLayoutEntry {
                     binding: 3,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -318,6 +362,7 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 4: Boxes
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: wgpu::ShaderStages::COMPUTE,
@@ -328,18 +373,31 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 5: Triangles
                 wgpu::BindGroupLayoutEntry {
                     binding: 5,
                     visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::StorageTexture {
-                        access: wgpu::StorageTextureAccess::WriteOnly,
-                        format: wgpu::TextureFormat::Rgba8Unorm,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
                     count: None,
                 },
+                // Binding 6: Materials
                 wgpu::BindGroupLayoutEntry {
                     binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 7: Scene Config
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
@@ -348,8 +406,31 @@ impl RayTracer {
                     },
                     count: None,
                 },
+                // Binding 8: Output Texture
                 wgpu::BindGroupLayoutEntry {
-                    binding: 7,
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                // Binding 9: Debug Params
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Binding 10: Debug Info
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: false },
@@ -359,7 +440,7 @@ impl RayTracer {
                     count: None,
                 },
             ],
-            label: Some("grid_bind_group_layout"),
+            label: Some("unified_bind_group_layout"),
         });
 
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -387,18 +468,30 @@ impl RayTracer {
                 },
                 wgpu::BindGroupEntry {
                     binding: 5,
-                    resource: wgpu::BindingResource::TextureView(output_texture_view),
+                    resource: triangle_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 6,
-                    resource: debug_params_buffer.as_entire_binding(),
+                    resource: material_buffer.as_entire_binding(),
                 },
                 wgpu::BindGroupEntry {
                     binding: 7,
+                    resource: scene_config_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(output_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: debug_params_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
                     resource: debug_info_buffer.as_entire_binding(),
                 },
             ],
-            label: Some("grid_bind_group"),
+            label: Some("unified_bind_group"),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

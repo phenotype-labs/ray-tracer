@@ -1,7 +1,9 @@
-// Hierarchical Grid Ray Tracer
+// Unified Ray Tracer - Supports both triangles and boxes with advanced features
+// Based on raytracer_grid.wgsl with triangle intersection from raytracer_triangles.wgsl
 
 const GRID_LEVELS: u32 = 4u;
 const MAX_OBJECTS_PER_CELL: u32 = 256u;
+const EPSILON: f32 = 0.00001;
 
 struct Camera {
     position: vec3<f32>,
@@ -33,12 +35,33 @@ struct Box {
     _pad6: f32,
 };
 
+struct Triangle {
+    v0: vec3<f32>,
+    material_id: f32,
+    v1: vec3<f32>,
+    _pad1: f32,
+    v2: vec3<f32>,
+    _pad2: f32,
+    uv0: vec2<f32>,
+    uv1: vec2<f32>,
+    uv2: vec2<f32>,
+    _pad3: vec2<f32>,
+};
+
+struct Material {
+    base_color: vec4<f32>,
+    texture_index: i32,
+    metallic: f32,
+    roughness: f32,
+    _pad: f32,
+};
+
 struct GridMetadata {
     bounds_min: vec3<f32>,
     num_levels: u32,
     bounds_max: vec3<f32>,
     finest_cell_size: f32,
-    grid_sizes: array<vec4<u32>, 4>,  // Size of each level (w component is padding)
+    grid_sizes: array<vec4<u32>, 4>,
 };
 
 struct FineCellData {
@@ -59,6 +82,8 @@ struct HitInfo {
     normal: vec3<f32>,
     color: vec3<f32>,
     reflectivity: f32,
+    object_id: u32,
+    is_triangle: bool,
 };
 
 struct TraceResult {
@@ -92,36 +117,31 @@ struct RayDebugInfo {
     _pad: f32,
 };
 
-@group(0) @binding(0)
-var<uniform> camera: Camera;
+struct SceneConfig {
+    num_boxes: u32,
+    num_triangles: u32,
+    _pad: vec2<u32>,
+};
 
-@group(0) @binding(1)
-var<uniform> grid_meta: GridMetadata;
+@group(0) @binding(0) var<uniform> camera: Camera;
+@group(0) @binding(1) var<uniform> grid_meta: GridMetadata;
+@group(0) @binding(2) var<storage, read> coarse_counts: array<u32>;
+@group(0) @binding(3) var<storage, read> fine_cells: array<FineCellData>;
+@group(0) @binding(4) var<storage, read> boxes: array<Box>;
+@group(0) @binding(5) var<storage, read> triangles: array<Triangle>;
+@group(0) @binding(6) var<storage, read> materials: array<Material>;
+@group(0) @binding(7) var<uniform> scene_config: SceneConfig;
+@group(0) @binding(8) var output_texture: texture_storage_2d<rgba8unorm, write>;
+@group(0) @binding(9) var<uniform> debug_params: DebugParams;
+@group(0) @binding(10) var<storage, read_write> debug_info: RayDebugInfo;
 
-@group(0) @binding(2)
-var<storage, read> coarse_counts: array<u32>;  // Flattened counts for all coarse levels
-
-@group(0) @binding(3)
-var<storage, read> fine_cells: array<FineCellData>;
-
-@group(0) @binding(4)
-var<storage, read> boxes: array<Box>;
-
-@group(0) @binding(5)
-var output_texture: texture_storage_2d<rgba8unorm, write>;
-
-@group(0) @binding(6)
-var<uniform> debug_params: DebugParams;
-
-@group(0) @binding(7)
-var<storage, read_write> debug_info: RayDebugInfo;
-
-fn should_cull_lod(box_center: vec3<f32>, box_size: vec3<f32>) -> bool {
-    let distance = length(camera.position - box_center);
+// LOD culling
+fn should_cull_lod(object_center: vec3<f32>, object_size: vec3<f32>) -> bool {
+    let distance = length(camera.position - object_center);
     if distance > 200.0 {
         return true;
     }
-    let max_size = max(max(box_size.x, box_size.y), box_size.z);
+    let max_size = max(max(object_size.x, object_size.y), object_size.z);
     let apparent_size = (max_size / distance) * camera.lod_factor;
     return apparent_size < camera.min_pixel_size;
 }
@@ -141,10 +161,7 @@ fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
         return -1.0;
     }
 
-    // If ray origin is inside/behind the box (t_near < 0)
     if t_near < 0.0 {
-        // Only return t_far if it's a meaningful distance (not on surface)
-        // This prevents self-intersection when ray is on surface pointing out
         if t_far > 0.001 {
             return t_far;
         } else {
@@ -156,20 +173,18 @@ fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
 }
 
 // Ray-box intersection (detailed hit info)
-fn intersect_box(ray: Ray, box: Box, time: f32) -> HitInfo {
+fn intersect_box(ray: Ray, box: Box, time: f32, box_idx: u32) -> HitInfo {
     var hit: HitInfo;
     hit.hit = false;
     hit.distance = 1e10;
+    hit.is_triangle = false;
+    hit.object_id = box_idx;
 
     // Interpolate box position for moving objects
-    // Use sin for oscillating motion between 0 and 1
     let t_lerp = (sin(time * 2.0) + 1.0) * 0.5;
     let interpolated_center = mix(box.center0, box.center1, t_lerp);
-
-    // Use the actual box half-size stored in the structure
     let box_half_size = box.half_size;
 
-    // Create bounds around interpolated center
     let box_min = interpolated_center - box_half_size;
     let box_max = interpolated_center + box_half_size;
 
@@ -200,6 +215,66 @@ fn intersect_box(ray: Ray, box: Box, time: f32) -> HitInfo {
     return hit;
 }
 
+// Ray-Triangle intersection using Möller-Trumbore algorithm
+fn intersect_triangle(ray: Ray, tri: Triangle, tri_idx: u32) -> HitInfo {
+    var hit: HitInfo;
+    hit.hit = false;
+    hit.distance = 1e30;
+    hit.is_triangle = true;
+    hit.object_id = tri_idx;
+
+    let edge1 = tri.v1 - tri.v0;
+    let edge2 = tri.v2 - tri.v0;
+
+    let h = cross(ray.direction, edge2);
+    let a = dot(edge1, h);
+
+    // Ray parallel to triangle
+    if abs(a) < EPSILON {
+        return hit;
+    }
+
+    let f = 1.0 / a;
+    let s = ray.origin - tri.v0;
+    let u = f * dot(s, h);
+
+    if u < 0.0 || u > 1.0 {
+        return hit;
+    }
+
+    let q = cross(s, edge1);
+    let v = f * dot(ray.direction, q);
+
+    if v < 0.0 || u + v > 1.0 {
+        return hit;
+    }
+
+    let t = f * dot(edge2, q);
+
+    if t > EPSILON {
+        hit.hit = true;
+        hit.distance = t;
+        hit.position = ray.origin + ray.direction * t;
+        hit.normal = normalize(cross(edge1, edge2));
+
+        // Get material color
+        let mat_id = u32(tri.material_id);
+        if mat_id < arrayLength(&materials) {
+            let material = materials[mat_id];
+            hit.color = material.base_color.rgb;
+            // Use metallic as reflectivity for now
+            hit.reflectivity = material.metallic;
+        } else {
+            hit.color = vec3(0.7, 0.7, 0.7);
+            hit.reflectivity = 0.0;
+        }
+
+        return hit;
+    }
+
+    return hit;
+}
+
 // Convert world position to grid cell coordinates
 fn world_to_cell(pos: vec3<f32>, cell_size: f32) -> vec3<u32> {
     let rel_pos = pos - grid_meta.bounds_min;
@@ -214,13 +289,11 @@ fn world_to_cell(pos: vec3<f32>, cell_size: f32) -> vec3<u32> {
 fn get_coarse_index(level: u32, cell: vec3<u32>) -> u32 {
     var offset = 0u;
 
-    // Calculate offset to this level in flattened array
     for (var i = 0u; i < level; i++) {
         let size = grid_meta.grid_sizes[i].xyz;
         offset += size.x * size.y * size.z;
     }
 
-    // Add cell index within this level
     let size = grid_meta.grid_sizes[level].xyz;
     return offset + cell.x + cell.y * size.x + cell.z * size.x * size.y;
 }
@@ -237,7 +310,7 @@ fn is_cell_valid(cell: vec3<u32>, level: u32) -> bool {
     return cell.x < size.x && cell.y < size.y && cell.z < size.z;
 }
 
-// Check if a world position is near a grid cell boundary
+// Check if near grid boundary
 fn is_near_grid_boundary(pos: vec3<f32>, cell_size: f32, threshold: f32) -> bool {
     let rel_pos = pos - grid_meta.bounds_min;
     let cell_local = (rel_pos % cell_size) / cell_size;
@@ -262,22 +335,23 @@ fn trace_ray(ray: Ray) -> TraceResult {
     closest_hit.hit = false;
     closest_hit.distance = 1e10;
 
-    // FIRST: Test moving objects (hardcoded for performance - only 3 in scene)
-    // Moving objects need to be tested directly because their AABB in the grid
-    // is larger than their actual size at any given time
-    let num_boxes = arrayLength(&boxes);
-    let moving_start = num_boxes - 3u;
-    for (var i = moving_start; i < num_boxes; i++) {
-        result.num_steps += 1.0;
-        let t_lerp = (sin(camera.time * 2.0) + 1.0) * 0.5;
-        let box_center = mix(boxes[i].center0, boxes[i].center1, t_lerp);
-        let box_size = boxes[i].half_size * 2.0;
+    // Test moving boxes directly (if any)
+    let num_boxes = scene_config.num_boxes;
+    if num_boxes > 0u {
+        // Assume last 3 boxes are moving (hardcoded for performance)
+        let moving_start = select(0u, num_boxes - 3u, num_boxes >= 3u);
+        for (var i = moving_start; i < num_boxes; i++) {
+            result.num_steps += 1.0;
+            let t_lerp = (sin(camera.time * 2.0) + 1.0) * 0.5;
+            let box_center = mix(boxes[i].center0, boxes[i].center1, t_lerp);
+            let box_size = boxes[i].half_size * 2.0;
 
-        if !should_cull_lod(box_center, box_size) {
-            let hit = intersect_box(ray, boxes[i], camera.time);
-            if hit.hit && hit.distance < closest_hit.distance {
-                closest_hit = hit;
-                result.object_id = f32(i);
+            if !should_cull_lod(box_center, box_size) {
+                let hit = intersect_box(ray, boxes[i], camera.time, i);
+                if hit.hit && hit.distance < closest_hit.distance {
+                    closest_hit = hit;
+                    result.object_id = f32(i);
+                }
             }
         }
     }
@@ -287,7 +361,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
 
     // Find entry point into grid
     var ray_pos = ray.origin;
-    var t_offset = 0.0;  // Offset from ray.origin to ray_pos
+    var t_offset = 0.0;
     let bounds_min = grid_meta.bounds_min;
     let bounds_max = grid_meta.bounds_max;
 
@@ -295,10 +369,9 @@ fn trace_ray(ray: Ray) -> TraceResult {
     if ray_pos.x < bounds_min.x || ray_pos.x > bounds_max.x ||
        ray_pos.y < bounds_min.y || ray_pos.y > bounds_max.y ||
        ray_pos.z < bounds_min.z || ray_pos.z > bounds_max.z {
-        // Intersect ray with grid AABB
         let t_entry = intersect_aabb(ray, bounds_min, bounds_max);
         if t_entry < 0.0 {
-            // Ray misses grid entirely
+            // Ray misses grid - return sky
             let t = (ray.direction.y + 1.0) * 0.5;
             result.color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
             result.hit = false;
@@ -307,8 +380,6 @@ fn trace_ray(ray: Ray) -> TraceResult {
         t_offset = t_entry + 0.001;
         ray_pos = ray.origin + ray.direction * t_offset;
 
-        // Clamp ray_pos to be safely inside grid bounds to avoid floating-point precision issues
-        // that would cause world_to_cell to clamp negative coordinates to 0
         let epsilon = 0.0001;
         ray_pos = clamp(ray_pos, bounds_min + vec3<f32>(epsilon), bounds_max - vec3<f32>(epsilon));
     }
@@ -316,14 +387,12 @@ fn trace_ray(ray: Ray) -> TraceResult {
     // DDA setup
     var current_cell = world_to_cell(ray_pos, cell_size);
 
-    // Step direction (±1 for each axis)
     let step = vec3<i32>(
         select(-1, 1, ray.direction.x >= 0.0),
         select(-1, 1, ray.direction.y >= 0.0),
         select(-1, 1, ray.direction.z >= 0.0)
     );
 
-    // Distance to next cell boundary along each axis
     let cell_pos_world = bounds_min + vec3<f32>(current_cell) * cell_size;
     let next_boundary = cell_pos_world + vec3<f32>(
         select(0.0, cell_size, step.x > 0),
@@ -331,14 +400,11 @@ fn trace_ray(ray: Ray) -> TraceResult {
         select(0.0, cell_size, step.z > 0)
     );
 
-    // Calculate t values to reach next boundary (relative to ray.origin for correct comparison with hit.distance)
     let t_delta = abs(cell_size / ray.direction);
     var t_max = t_offset + (next_boundary - ray_pos) / ray.direction;
-
-    // Clamp negative values to small positive (handles numerical precision at boundaries)
     t_max = max(t_max, vec3<f32>(t_offset + 0.00001));
 
-    // DDA traversal (max 200 steps to prevent infinite loops)
+    // DDA traversal
     for (var i = 0; i < 200; i++) {
         result.num_steps += 1.0;
 
@@ -349,26 +415,42 @@ fn trace_ray(ray: Ray) -> TraceResult {
         if cell_data.count > 0u {
             for (var j = 0u; j < cell_data.count && j < MAX_OBJECTS_PER_CELL; j++) {
                 let obj_idx = cell_data.object_indices[j];
-                let box = boxes[obj_idx];
-                let box_center = (box.min + box.max) * 0.5;
-                let box_size = box.max - box.min;
 
-                if !should_cull_lod(box_center, box_size) {
-                    let hit = intersect_box(ray, box, camera.time);
-                    if hit.hit && hit.distance < closest_hit.distance {
-                        closest_hit = hit;
-                        result.object_id = f32(obj_idx);
+                // Check if it's a box or triangle based on index
+                // Boxes come first, then triangles
+                if obj_idx < num_boxes {
+                    // Box
+                    let box = boxes[obj_idx];
+                    let box_center = (box.min + box.max) * 0.5;
+                    let box_size = box.max - box.min;
+
+                    if !should_cull_lod(box_center, box_size) {
+                        let hit = intersect_box(ray, box, camera.time, obj_idx);
+                        if hit.hit && hit.distance < closest_hit.distance {
+                            closest_hit = hit;
+                            result.object_id = f32(obj_idx);
+                        }
+                    }
+                } else {
+                    // Triangle
+                    let tri_idx = obj_idx - num_boxes;
+                    if tri_idx < scene_config.num_triangles {
+                        let hit = intersect_triangle(ray, triangles[tri_idx], tri_idx);
+                        if hit.hit && hit.distance < closest_hit.distance {
+                            closest_hit = hit;
+                            result.object_id = f32(obj_idx);
+                        }
                     }
                 }
             }
         }
 
-        // If we found a hit and it's closer than next cell, stop
+        // If we found a hit closer than next cell, stop
         if closest_hit.hit && closest_hit.distance < min(min(t_max.x, t_max.y), t_max.z) {
             break;
         }
 
-        // Step to next cell along shortest t_max, checking bounds before stepping
+        // Step to next cell
         if t_max.x < t_max.y && t_max.x < t_max.z {
             let next_x = i32(current_cell.x) + step.x;
             if next_x < 0 || next_x >= i32(grid_size.x) {
@@ -410,9 +492,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
 
     // Grid visualization
     if camera.show_grid > 0.5 {
-        let cell_size = grid_meta.finest_cell_size;
         let threshold = 0.02;
-
         if is_near_grid_boundary(closest_hit.position, cell_size, threshold) {
             final_color = mix(final_color, vec3<f32>(0.0, 1.0, 0.0), 0.6);
         }
@@ -433,14 +513,12 @@ fn trace_ray(ray: Ray) -> TraceResult {
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let screen_size = textureDimensions(output_texture);
 
-    // Early exit if outside texture bounds
     if global_id.x >= screen_size.x || global_id.y >= screen_size.y {
         return;
     }
 
     let pixel_coords = vec2<i32>(global_id.xy);
 
-    // Calculate normalized device coordinates
     let uv = vec2<f32>(
         (f32(pixel_coords.x) + 0.5) / f32(screen_size.x),
         (f32(pixel_coords.y) + 0.5) / f32(screen_size.y)
@@ -462,42 +540,37 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     ray.origin = camera.position;
     ray.direction = ray_dir;
 
-    // Trace the ray with multiple reflection bounces
+    // Trace with multiple reflection bounces
     const MAX_BOUNCES: u32 = 8u;
     var accumulated_color = vec3<f32>(0.0);
     var current_ray = ray;
     var reflection_multiplier = 1.0;
 
-    // Store first bounce for debug info
     var first_trace_result: TraceResult;
 
     for (var bounce = 0u; bounce < MAX_BOUNCES; bounce++) {
         let trace_result = trace_ray(current_ray);
 
-        // Store first bounce for debug
         if bounce == 0u {
             first_trace_result = trace_result;
         }
 
         if !trace_result.hit {
-            // Hit sky - add sky color contribution and stop
             accumulated_color += trace_result.color * reflection_multiplier;
             break;
         }
 
-        // Add this surface's diffuse (non-reflected) contribution
+        // Add diffuse contribution
         let surface_contribution = trace_result.color * (1.0 - trace_result.reflectivity);
         accumulated_color += surface_contribution * reflection_multiplier;
 
-        // If no reflectivity, we're done
         if trace_result.reflectivity < 0.01 {
             break;
         }
 
-        // Update multiplier for next bounce
         reflection_multiplier *= trace_result.reflectivity;
 
-        // Calculate reflection ray for next bounce
+        // Calculate reflection ray
         let reflect_dir = reflect(current_ray.direction, trace_result.normal);
         let reflect_origin = trace_result.position + trace_result.normal * 0.001;
 
@@ -507,13 +580,12 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     var final_color = accumulated_color;
 
-    // Check if this is the debug pixel
+    // Debug pixel highlighting
     let is_debug_pixel = debug_params.enabled > 0u &&
                          global_id.x == debug_params.debug_pixel.x &&
                          global_id.y == debug_params.debug_pixel.y;
 
     if is_debug_pixel {
-        // Write debug info
         debug_info.ray_origin = ray.origin;
         debug_info.ray_direction = ray.direction;
         debug_info.hit = select(0.0, 1.0, first_trace_result.hit);
@@ -524,10 +596,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         debug_info.object_id = first_trace_result.object_id;
         debug_info.num_steps = first_trace_result.num_steps;
 
-        // Highlight the debug pixel with a bright border
-        final_color = vec3<f32>(1.0, 1.0, 0.0); // Yellow highlight
+        final_color = vec3<f32>(1.0, 1.0, 0.0);
     } else if debug_params.enabled > 0u {
-        // Draw a 3x3 border around the debug pixel
         let dx = i32(global_id.x) - i32(debug_params.debug_pixel.x);
         let dy = i32(global_id.y) - i32(debug_params.debug_pixel.y);
         if (abs(dx) <= 1 && abs(dy) <= 1) && !(dx == 0 && dy == 0) {
@@ -535,6 +605,5 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    // Write to output texture
     textureStore(output_texture, pixel_coords, vec4<f32>(final_color, 1.0));
 }

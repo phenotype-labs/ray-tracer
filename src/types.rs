@@ -276,3 +276,22 @@ impl MaterialData {
         }
     }
 }
+
+/// Scene configuration for unified shader
+#[repr(C)]
+#[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SceneConfig {
+    pub num_boxes: u32,
+    pub num_triangles: u32,
+    pub _pad: [u32; 2],
+}
+
+impl SceneConfig {
+    pub fn new(num_boxes: usize, num_triangles: usize) -> Self {
+        Self {
+            num_boxes: num_boxes as u32,
+            num_triangles: num_triangles as u32,
+            _pad: [0, 0],
+        }
+    }
+}

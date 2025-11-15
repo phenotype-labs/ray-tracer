@@ -6,7 +6,6 @@ mod tunnel;
 mod default;
 mod reflected;
 mod gltf;
-mod gltf_triangles;
 
 pub use composed::create_composed_scene;
 pub use fractal::create_fractal_scene;
@@ -15,4 +14,3 @@ pub use tunnel::create_tunnel_scene;
 pub use default::create_default_scene;
 pub use reflected::create_reflected_scene;
 pub use gltf::create_gltf_scene;
-pub use gltf_triangles::{create_gltf_triangle_scene, TriangleScene};
