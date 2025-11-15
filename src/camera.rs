@@ -59,6 +59,8 @@ impl Camera {
             "composed" => (Vec3::new(0.0, 40.0, 40.0), std::f32::consts::PI, -0.7),
             "walls" => (Vec3::new(0.0, 5.0, 0.0), 0.0, 0.0),
             "tunnel" => (Vec3::new(0.0, 0.0, 20.0), std::f32::consts::PI, 0.0),
+            "gltf" => (Vec3::new(200.0, 200.0, 300.0), 3.35, -0.28),
+            "pyramid" => (Vec3::new(0.0, 8.0, 20.0), std::f32::consts::PI, -0.5),
             _ => (Vec3::new(0.0, 8.0, 15.0), std::f32::consts::PI, -0.6),
         };
 

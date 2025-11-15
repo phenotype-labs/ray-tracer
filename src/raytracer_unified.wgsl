@@ -373,7 +373,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
         if t_entry < 0.0 {
             // Ray misses grid - return sky
             let t = (ray.direction.y + 1.0) * 0.5;
-            result.color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+            result.color = mix(vec3<f32>(0.3, 0.5, 0.7), vec3<f32>(0.5, 0.7, 1.0), t);
             result.hit = false;
             return result;
         }
@@ -478,7 +478,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
     // If no hit, return sky color
     if !closest_hit.hit {
         let t = (ray.direction.y + 1.0) * 0.5;
-        result.color = mix(vec3<f32>(1.0, 1.0, 1.0), vec3<f32>(0.5, 0.7, 1.0), t);
+        result.color = mix(vec3<f32>(0.3, 0.5, 0.7), vec3<f32>(0.5, 0.7, 1.0), t);
         result.hit = false;
         return result;
     }

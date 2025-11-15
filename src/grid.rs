@@ -1,4 +1,4 @@
-use crate::types::BoxData;
+use crate::types::{BoxData, TriangleData};
 use crate::math::AABB;
 use glam::Vec3;
 
@@ -107,10 +107,24 @@ pub struct HierarchicalGrid {
 }
 
 impl HierarchicalGrid {
-    pub fn build(objects: &[BoxData]) -> Self {
-        let mut bounds = objects[0].bounds();
+    pub fn build(objects: &[BoxData], triangles: &[TriangleData]) -> Self {
+        // Compute bounds from both boxes and triangles
+        let mut bounds = if !objects.is_empty() {
+            objects[0].bounds()
+        } else if !triangles.is_empty() {
+            triangles[0].bounds()
+        } else {
+            AABB {
+                min: Vec3::splat(-1.0),
+                max: Vec3::splat(1.0),
+            }
+        };
+
         for obj in &objects[1..] {
             bounds = bounds.union(&obj.bounds());
+        }
+        for tri in triangles {
+            bounds = bounds.union(&tri.bounds());
         }
 
         let padding = Vec3::splat(1.0);
@@ -148,8 +162,15 @@ impl HierarchicalGrid {
             fine_level,
         };
 
+        // Assign boxes (object IDs 0..num_boxes-1)
         for (obj_id, obj) in objects.iter().enumerate() {
             grid.assign_object(obj, obj_id as u32);
+        }
+
+        // Assign triangles (object IDs num_boxes..num_boxes+num_triangles-1)
+        let num_boxes = objects.len() as u32;
+        for (tri_id, tri) in triangles.iter().enumerate() {
+            grid.assign_triangle(tri, num_boxes + tri_id as u32);
         }
 
         let total_coarse_cells: usize = grid
@@ -216,6 +237,33 @@ impl HierarchicalGrid {
     fn assign_object(&mut self, obj: &BoxData, obj_id: u32) {
         let obj_min = Vec3::from_array(obj.min);
         let obj_max = Vec3::from_array(obj.max);
+        let bounds_min = self.bounds.min;
+
+        for level in self.coarse_levels.iter_mut() {
+            Self::cells_in_bounds(
+                obj_min,
+                obj_max,
+                bounds_min,
+                level.cell_size,
+                level.grid_size,
+            )
+            .for_each(|(x, y, z)| level.increment_cell(x, y, z));
+        }
+
+        Self::cells_in_bounds(
+            obj_min,
+            obj_max,
+            bounds_min,
+            self.fine_level.cell_size,
+            self.fine_level.grid_size,
+        )
+        .for_each(|(x, y, z)| self.fine_level.add_object(x, y, z, obj_id));
+    }
+
+    fn assign_triangle(&mut self, tri: &TriangleData, obj_id: u32) {
+        let tri_bounds = tri.bounds();
+        let obj_min = tri_bounds.min;
+        let obj_max = tri_bounds.max;
         let bounds_min = self.bounds.min;
 
         for level in self.coarse_levels.iter_mut() {

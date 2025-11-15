@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
-use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene};
+use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene, create_pyramid_scene, create_pyramid_triangles};
 use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
 
 pub const WORKGROUP_SIZE: u32 = 8;
@@ -62,12 +62,33 @@ impl RayTracer {
             "default" => create_default_scene(),
             "reflected" => create_reflected_scene(),
             "gltf" => create_gltf_scene(),
+            "pyramid" => create_pyramid_scene(),
             _ => create_fractal_scene(),
         };
         let num_boxes = boxes.len();
 
+        // Load triangles and materials for triangle-based scenes
+        let (triangles, materials) = if scene_name == "pyramid" {
+            let tris = create_pyramid_triangles();
+            let num_tris = tris.len();
+
+            // Create materials with different colors for each pyramid face
+            let mats = vec![
+                MaterialData::new_color([1.0, 0.2, 0.2, 1.0]), // Red (front)
+                MaterialData::new_color([0.2, 1.0, 0.2, 1.0]), // Green (right)
+                MaterialData::new_color([0.2, 0.2, 1.0, 1.0]), // Blue (back)
+                MaterialData::new_color([1.0, 1.0, 0.2, 1.0]), // Yellow (left)
+                MaterialData::new_color([0.5, 0.5, 0.5, 1.0]), // Gray (base)
+            ];
+
+            println!("Loaded {} triangles and {} materials for pyramid", num_tris, mats.len());
+            (tris, mats)
+        } else {
+            (vec![], vec![])
+        };
+
         println!("Building Hierarchical Grid...");
-        let grid = HierarchicalGrid::build(&boxes);
+        let grid = HierarchicalGrid::build(&boxes, &triangles);
         let (metadata, coarse_counts, fine_cells) = grid.to_gpu_buffers();
 
         let grid_meta_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -94,8 +115,6 @@ impl RayTracer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Create empty triangle buffer for unified shader (will be populated when loading triangle scenes)
-        let triangles: Vec<TriangleData> = vec![];
         let dummy_triangle = [TriangleData::new([0.0; 3], [0.0; 3], [0.0; 3], [0.0; 2], [0.0; 2], [0.0; 2], 0)];
         let triangle_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Triangle Buffer"),
@@ -107,8 +126,6 @@ impl RayTracer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
-        // Create empty material buffer for unified shader
-        let materials: Vec<MaterialData> = vec![];
         let dummy_material = [MaterialData::new_color([1.0, 1.0, 1.0, 1.0])];
         let material_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Material Buffer"),
@@ -121,7 +138,7 @@ impl RayTracer {
         });
 
         // Create scene config buffer
-        let scene_config = SceneConfig::new(num_boxes, 0);
+        let scene_config = SceneConfig::new(num_boxes, triangles.len());
         let scene_config_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Scene Config Buffer"),
             contents: bytemuck::cast_slice(&[scene_config]),
@@ -623,6 +640,19 @@ impl RayTracer {
         fps: f32,
         time: f32,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
+        // Debug output every 60 frames to show rendering is active
+        static mut FRAME_COUNTER: u32 = 0;
+        unsafe {
+            FRAME_COUNTER += 1;
+            if FRAME_COUNTER % 60 == 0 {
+                println!("🎨 Rendering active - Frame: {}, Camera: ({:.1}, {:.1}, {:.1})",
+                    FRAME_COUNTER,
+                    camera.position.x,
+                    camera.position.y,
+                    camera.position.z);
+            }
+        }
+
         let fov = 0.785398;
         let show_grid = *self.show_grid.lock().unwrap();
         let camera_uniform = camera.to_uniform(time, self.size.height as f32, fov, show_grid);
@@ -710,6 +740,17 @@ impl RayTracer {
                 self.debug_info = *bytemuck::from_bytes(&data);
             }
             staging_buffer.unmap();
+
+            // Output debug info when we have a pixel selected
+            if self.debug_info.hit > 0.5 {
+                println!("🎯 Ray HIT at pixel {:?} - Distance: {:.2}, Object: {:.0}, Color: ({:.2}, {:.2}, {:.2})",
+                    self.debug_pixel,
+                    self.debug_info.distance,
+                    self.debug_info.object_id,
+                    self.debug_info.hit_color[0],
+                    self.debug_info.hit_color[1],
+                    self.debug_info.hit_color[2]);
+            }
 
             encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Encoder 2"),
@@ -838,6 +879,14 @@ impl RayTracer {
                         }
                         if ui.button("Composed Scene").clicked() {
                             *scene = "composed".to_string();
+                            changed = true;
+                        }
+                        if ui.button("glTF Scene").clicked() {
+                            *scene = "gltf".to_string();
+                            changed = true;
+                        }
+                        if ui.button("Pyramid Scene").clicked() {
+                            *scene = "pyramid".to_string();
                             changed = true;
                         }
 
