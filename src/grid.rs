@@ -120,8 +120,10 @@ impl HierarchicalGrid {
             }
         };
 
-        for obj in &objects[1..] {
-            bounds = bounds.union(&obj.bounds());
+        if !objects.is_empty() {
+            for obj in &objects[1..] {
+                bounds = bounds.union(&obj.bounds());
+            }
         }
         for tri in triangles {
             bounds = bounds.union(&tri.bounds());

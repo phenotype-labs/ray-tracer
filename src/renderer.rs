@@ -3,7 +3,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
 use crate::grid::HierarchicalGrid;
-use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_scene, create_gltf_triangles, create_pyramid_scene, create_pyramid_triangles};
+use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_triangles, create_pyramid_triangles};
 use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
 
 pub const WORKGROUP_SIZE: u32 = 8;
@@ -61,8 +61,8 @@ impl RayTracer {
             "tunnel" => create_tunnel_scene(),
             "default" => create_default_scene(),
             "reflected" => create_reflected_scene(),
-            "gltf" => create_gltf_scene(),
-            "pyramid" => create_pyramid_scene(),
+            "gltf" => vec![], // Use triangle-based rendering with textures
+            "pyramid" => vec![], // Use triangle-based rendering
             _ => create_fractal_scene(),
         };
         let num_boxes = boxes.len();
@@ -112,9 +112,15 @@ impl RayTracer {
             usage: wgpu::BufferUsages::STORAGE,
         });
 
+        // Create box buffer with at least one dummy box to avoid zero-sized buffer
+        let dummy_box = [crate::types::BoxData::new([0.0; 3], [0.0; 3], [1.0, 1.0, 1.0])];
         let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Box Buffer"),
-            contents: bytemuck::cast_slice(&boxes),
+            contents: if boxes.is_empty() {
+                bytemuck::cast_slice(&dummy_box)
+            } else {
+                bytemuck::cast_slice(&boxes)
+            },
             usage: wgpu::BufferUsages::STORAGE,
         });
 
