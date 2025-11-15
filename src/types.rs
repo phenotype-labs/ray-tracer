@@ -249,30 +249,45 @@ impl TriangleData {
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MaterialData {
     pub base_color: [f32; 4],
+    pub emissive: [f32; 3],
     pub texture_index: i32,  // -1 means no texture
     pub metallic: f32,
     pub roughness: f32,
-    pub _pad: f32,
+    pub normal_texture_index: i32,  // -1 means no normal map
+    pub emissive_texture_index: i32,  // -1 means no emissive texture
+    pub alpha_mode: u32,  // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    pub alpha_cutoff: f32,
+    pub _pad: [f32; 2],
 }
 
 impl MaterialData {
     pub fn new_color(color: [f32; 4]) -> Self {
         Self {
             base_color: color,
+            emissive: [0.0, 0.0, 0.0],
             texture_index: -1,
             metallic: 0.0,
             roughness: 1.0,
-            _pad: 0.0,
+            normal_texture_index: -1,
+            emissive_texture_index: -1,
+            alpha_mode: 0,  // OPAQUE
+            alpha_cutoff: 0.5,
+            _pad: [0.0, 0.0],
         }
     }
 
     pub fn new_textured(color: [f32; 4], texture_index: u32) -> Self {
         Self {
             base_color: color,
+            emissive: [0.0, 0.0, 0.0],
             texture_index: texture_index as i32,
             metallic: 0.0,
             roughness: 1.0,
-            _pad: 0.0,
+            normal_texture_index: -1,
+            emissive_texture_index: -1,
+            alpha_mode: 0,  // OPAQUE
+            alpha_cutoff: 0.5,
+            _pad: [0.0, 0.0],
         }
     }
 }

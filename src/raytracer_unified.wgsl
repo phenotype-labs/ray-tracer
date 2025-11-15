@@ -50,10 +50,15 @@ struct Triangle {
 
 struct Material {
     base_color: vec4<f32>,
+    emissive: vec3<f32>,
     texture_index: i32,
     metallic: f32,
     roughness: f32,
-    _pad: f32,
+    normal_texture_index: i32,
+    emissive_texture_index: i32,
+    alpha_mode: u32,  // 0 = OPAQUE, 1 = MASK, 2 = BLEND
+    alpha_cutoff: f32,
+    _pad: vec2<f32>,
 };
 
 struct GridMetadata {
@@ -84,6 +89,8 @@ struct HitInfo {
     reflectivity: f32,
     object_id: u32,
     is_triangle: bool,
+    emissive: vec3<f32>,
+    roughness: f32,
 };
 
 struct TraceResult {
@@ -213,6 +220,8 @@ fn intersect_box(ray: Ray, box: Box, time: f32, box_idx: u32) -> HitInfo {
 
     hit.color = box.color;
     hit.reflectivity = box.reflectivity;
+    hit.emissive = vec3<f32>(0.0);
+    hit.roughness = 1.0;
 
     return hit;
 }
@@ -264,14 +273,14 @@ fn intersect_triangle(ray: Ray, tri: Triangle, tri_idx: u32) -> HitInfo {
         if mat_id < arrayLength(&materials) {
             let material = materials[mat_id];
 
-            // Check if material has a texture
-            if material.texture_index >= 0 {
-                // Calculate UV coordinates using barycentric coordinates
-                // u and v from intersection are the barycentric coords for v1 and v2
-                let w = 1.0 - u - v;  // barycentric coord for v0
-                let uv = tri.uv0 * w + tri.uv1 * u + tri.uv2 * v;
+            // Calculate UV coordinates using barycentric coordinates
+            // u and v from intersection are the barycentric coords for v1 and v2
+            let w = 1.0 - u - v;  // barycentric coord for v0
+            let uv = tri.uv0 * w + tri.uv1 * u + tri.uv2 * v;
 
-                // Sample the texture from the array
+            // Sample base color
+            var base_color: vec4<f32>;
+            if material.texture_index >= 0 {
                 let tex_color = textureSampleLevel(
                     texture_array,
                     texture_sampler,
@@ -279,19 +288,79 @@ fn intersect_triangle(ray: Ray, tri: Triangle, tri_idx: u32) -> HitInfo {
                     material.texture_index,
                     0.0  // mip level
                 );
-
-                // Multiply texture color with base color
-                hit.color = tex_color.rgb * material.base_color.rgb;
+                base_color = tex_color * material.base_color;
             } else {
-                // No texture, just use base color
-                hit.color = material.base_color.rgb;
+                base_color = material.base_color;
             }
 
-            // Use metallic as reflectivity for now
+            // Handle alpha modes
+            if material.alpha_mode == 1u {  // MASK
+                if base_color.a < material.alpha_cutoff {
+                    return hit;  // Discard this hit
+                }
+            } else if material.alpha_mode == 2u {  // BLEND
+                // For ray tracing, we'll treat blend similar to mask for now
+                // Full alpha blending would require sorting and multiple passes
+                if base_color.a < 0.01 {
+                    return hit;  // Nearly transparent, discard
+                }
+            }
+
+            hit.color = base_color.rgb;
+
+            // Apply normal mapping if available
+            if material.normal_texture_index >= 0 {
+                // Sample normal map
+                let normal_sample = textureSampleLevel(
+                    texture_array,
+                    texture_sampler,
+                    uv,
+                    material.normal_texture_index,
+                    0.0
+                );
+
+                // Convert from [0,1] to [-1,1] and extract normal
+                let tangent_normal = normalize(normal_sample.rgb * 2.0 - 1.0);
+
+                // For simplicity, we'll perturb the geometric normal
+                // A full implementation would require tangent/bitangent vectors
+                let geometric_normal = normalize(cross(edge1, edge2));
+
+                // Create a simple tangent space (not perfect but works for many cases)
+                let up = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0),
+                               abs(geometric_normal.y) > 0.9);
+                let tangent = normalize(cross(up, geometric_normal));
+                let bitangent = cross(geometric_normal, tangent);
+
+                // Transform normal from tangent space to world space
+                let world_normal = tangent_normal.x * tangent +
+                                   tangent_normal.y * bitangent +
+                                   tangent_normal.z * geometric_normal;
+                hit.normal = normalize(world_normal);
+            }
+
+            // Add emissive contribution
+            var emissive_color = material.emissive;
+            if material.emissive_texture_index >= 0 {
+                let emissive_sample = textureSampleLevel(
+                    texture_array,
+                    texture_sampler,
+                    uv,
+                    material.emissive_texture_index,
+                    0.0
+                );
+                emissive_color *= emissive_sample.rgb;
+            }
+            hit.emissive = emissive_color;
+
+            // Use metallic as reflectivity and store roughness
             hit.reflectivity = material.metallic;
+            hit.roughness = material.roughness;
         } else {
             hit.color = vec3(0.7, 0.7, 0.7);
             hit.reflectivity = 0.0;
+            hit.emissive = vec3<f32>(0.0);
+            hit.roughness = 1.0;
         }
 
         return hit;
@@ -508,12 +577,15 @@ fn trace_ray(ray: Ray) -> TraceResult {
         return result;
     }
 
-    // Simple lighting
+    // Lighting: ambient + directional + emissive surfaces
     let light_dir = normalize(vec3<f32>(0.5, -1.0, 0.3));
     let diffuse = max(dot(closest_hit.normal, -light_dir), 0.0);
     let ambient = 0.3;
 
-    var final_color = closest_hit.color * (ambient + diffuse * 0.7);
+    // Direct lighting from emissive surfaces (area lights)
+    let emissive_light = sample_emissive_light(closest_hit.position, closest_hit.normal);
+
+    var final_color = closest_hit.color * (ambient + diffuse * 0.7 + emissive_light) + closest_hit.emissive;
 
     // Grid visualization
     if camera.show_grid > 0.5 {
@@ -532,6 +604,99 @@ fn trace_ray(ray: Ray) -> TraceResult {
     result.reflectivity = closest_hit.reflectivity;
 
     return result;
+}
+
+// Test if a ray is occluded (for shadow rays)
+fn is_occluded(ray: Ray, max_distance: f32) -> bool {
+    let num_boxes = scene_config.num_boxes;
+    let num_triangles = scene_config.num_triangles;
+
+    // Test boxes
+    for (var i = 0u; i < num_boxes; i++) {
+        let box = boxes[i];
+        let box_center = (box.min + box.max) * 0.5;
+        let box_size = box.max - box.min;
+
+        if !should_cull_lod(box_center, box_size) {
+            let hit = intersect_box(ray, box, camera.time, i);
+            if hit.hit && hit.distance < max_distance && hit.distance > 0.001 {
+                return true;
+            }
+        }
+    }
+
+    // Test triangles
+    for (var i = 0u; i < num_triangles; i++) {
+        let hit = intersect_triangle(ray, triangles[i], i);
+        if hit.hit && hit.distance < max_distance && hit.distance > 0.001 {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+// Calculate direct lighting from emissive surfaces
+fn sample_emissive_light(hit_pos: vec3<f32>, hit_normal: vec3<f32>) -> vec3<f32> {
+    var total_light = vec3<f32>(0.0);
+    let num_triangles = scene_config.num_triangles;
+
+    // Sample emissive triangles
+    for (var i = 0u; i < num_triangles; i++) {
+        let mat_id = u32(triangles[i].material_id);
+        if mat_id >= arrayLength(&materials) {
+            continue;
+        }
+
+        let material = materials[mat_id];
+
+        // Skip non-emissive materials
+        let emissive_strength = length(material.emissive);
+        if emissive_strength < 0.001 {
+            continue;
+        }
+
+        // Calculate triangle center as light position
+        let tri = triangles[i];
+        let light_pos = (tri.v0 + tri.v1 + tri.v2) / 3.0;
+        let light_normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
+
+        // Vector from hit point to light
+        let to_light = light_pos - hit_pos;
+        let distance = length(to_light);
+        let light_dir = to_light / distance;
+
+        // Check if light is facing the surface
+        let n_dot_l = max(dot(hit_normal, light_dir), 0.0);
+        if n_dot_l < 0.001 {
+            continue;
+        }
+
+        // Check if surface is facing the light
+        let light_facing = dot(light_normal, -light_dir);
+        if light_facing < 0.001 {
+            continue;
+        }
+
+        // Shadow ray
+        var shadow_ray: Ray;
+        shadow_ray.origin = hit_pos + hit_normal * 0.001;
+        shadow_ray.direction = light_dir;
+
+        if !is_occluded(shadow_ray, distance - 0.002) {
+            // Calculate triangle area for proper light intensity
+            let edge1 = tri.v1 - tri.v0;
+            let edge2 = tri.v2 - tri.v0;
+            let area = length(cross(edge1, edge2)) * 0.5;
+
+            // Inverse square falloff with area compensation
+            let attenuation = (area * light_facing) / (distance * distance + 1.0);
+
+            total_light += material.emissive * n_dot_l * attenuation;
+        }
+    }
+
+    return total_light;
 }
 
 @compute @workgroup_size(8, 8, 1)

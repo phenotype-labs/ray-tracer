@@ -41,6 +41,8 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
     for (mat_idx, material) in gltf.materials().enumerate() {
         let pbr = material.pbr_metallic_roughness();
         let base_color = pbr.base_color_factor();
+        let metallic = pbr.metallic_factor();
+        let roughness = pbr.roughness_factor();
 
         let texture_index = if let Some(info) = pbr.base_color_texture() {
             let tex_index = info.texture().index();
@@ -50,10 +52,47 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
             -1
         };
 
-        let material_data = if texture_index >= 0 {
-            MaterialData::new_textured(base_color, texture_index as u32)
+        let normal_texture_index = if let Some(info) = material.normal_texture() {
+            let tex_index = info.texture().index();
+            println!("  Material {} uses normal map {}", mat_idx, tex_index);
+            tex_index as i32
         } else {
-            MaterialData::new_color(base_color)
+            -1
+        };
+
+        let emissive = material.emissive_factor();
+        let emissive_texture_index = if let Some(info) = material.emissive_texture() {
+            let tex_index = info.texture().index();
+            println!("  Material {} uses emissive texture {}", mat_idx, tex_index);
+            tex_index as i32
+        } else {
+            -1
+        };
+
+        // Get alpha mode and cutoff
+        let alpha_mode = match material.alpha_mode() {
+            gltf::material::AlphaMode::Opaque => 0u32,
+            gltf::material::AlphaMode::Mask => 1u32,
+            gltf::material::AlphaMode::Blend => 2u32,
+        };
+        let alpha_cutoff = material.alpha_cutoff().unwrap_or(0.5);
+
+        if alpha_mode != 0 {
+            println!("  Material {} has alpha mode: {:?} (cutoff: {})",
+                mat_idx, material.alpha_mode(), alpha_cutoff);
+        }
+
+        let material_data = MaterialData {
+            base_color,
+            emissive,
+            texture_index,
+            metallic,
+            roughness,
+            normal_texture_index,
+            emissive_texture_index,
+            alpha_mode,
+            alpha_cutoff,
+            _pad: [0.0, 0.0],
         };
 
         materials.push(material_data);
