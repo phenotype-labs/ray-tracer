@@ -59,7 +59,8 @@ impl TriangleGrid {
         // Build grid levels
         let mut coarse_levels = Vec::new();
         for level in 0..(TRIANGLE_GRID_LEVELS - 1) {
-            let cell_size = TRIANGLE_FINEST_CELL_SIZE * (1 << (TRIANGLE_GRID_LEVELS - 1 - level)) as f32;
+            let cell_size =
+                TRIANGLE_FINEST_CELL_SIZE * (1 << (TRIANGLE_GRID_LEVELS - 1 - level)) as f32;
             let grid_size = Self::compute_grid_size(&bounds, cell_size);
             let total_cells = grid_size[0] * grid_size[1] * grid_size[2];
             let mut counts = vec![0u8; total_cells];
@@ -70,8 +71,10 @@ impl TriangleGrid {
                 Self::mark_cells(&bounds, cell_size, &grid_size, &tri_bounds, &mut counts);
             }
 
-            println!("Coarse level {}: {}x{}x{} cells (size: {})",
-                level, grid_size[0], grid_size[1], grid_size[2], cell_size);
+            println!(
+                "Coarse level {}: {}x{}x{} cells (size: {})",
+                level, grid_size[0], grid_size[1], grid_size[2], cell_size
+            );
 
             coarse_levels.push(CoarseGridLevel {
                 cell_size,
@@ -101,8 +104,10 @@ impl TriangleGrid {
         let occupied = fine_cells.iter().filter(|c| !c.is_empty()).count();
         let max_tris = fine_cells.iter().map(|c| c.len()).max().unwrap_or(0);
 
-        println!("Fine level: {}x{}x{} cells (size: {})",
-            fine_grid_size[0], fine_grid_size[1], fine_grid_size[2], fine_cell_size);
+        println!(
+            "Fine level: {}x{}x{} cells (size: {})",
+            fine_grid_size[0], fine_grid_size[1], fine_grid_size[2], fine_cell_size
+        );
         println!("Triangle grid stats:");
         println!("  Fine cells occupied: {}/{}", occupied, fine_total_cells);
         println!("  Max triangles in a cell: {}", max_tris);
@@ -148,8 +153,13 @@ impl TriangleGrid {
                 for z in min_cell.z.max(0)..=(max_cell.z.min(grid_size[2] as i32 - 1)) {
                     // Loop bounds guarantee x,y,z are non-negative and within grid bounds
                     debug_assert!(x >= 0 && y >= 0 && z >= 0);
-                    debug_assert!((x as usize) < grid_size[0] && (y as usize) < grid_size[1] && (z as usize) < grid_size[2]);
-                    let cell_idx = Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
+                    debug_assert!(
+                        (x as usize) < grid_size[0]
+                            && (y as usize) < grid_size[1]
+                            && (z as usize) < grid_size[2]
+                    );
+                    let cell_idx =
+                        Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
                     if cell_idx < counts.len() {
                         counts[cell_idx] = counts[cell_idx].saturating_add(1);
                     }
@@ -174,8 +184,13 @@ impl TriangleGrid {
                 for z in min_cell.z.max(0)..=(max_cell.z.min(grid_size[2] as i32 - 1)) {
                     // Loop bounds guarantee x,y,z are non-negative and within grid bounds
                     debug_assert!(x >= 0 && y >= 0 && z >= 0);
-                    debug_assert!((x as usize) < grid_size[0] && (y as usize) < grid_size[1] && (z as usize) < grid_size[2]);
-                    let cell_idx = Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
+                    debug_assert!(
+                        (x as usize) < grid_size[0]
+                            && (y as usize) < grid_size[1]
+                            && (z as usize) < grid_size[2]
+                    );
+                    let cell_idx =
+                        Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
                     if cell_idx < cells.len() && cells[cell_idx].len() < MAX_TRIANGLES_PER_CELL {
                         cells[cell_idx].push(tri_idx);
                     }

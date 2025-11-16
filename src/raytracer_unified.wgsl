@@ -1,6 +1,3 @@
-// Unified Ray Tracer - Supports both triangles and boxes with advanced features
-// Based on raytracer_grid.wgsl with triangle intersection from raytracer_triangles.wgsl
-
 const GRID_LEVELS: u32 = 4u;
 const MAX_OBJECTS_PER_CELL: u32 = 8192u;
 const EPSILON: f32 = 0.00001;
@@ -598,15 +595,12 @@ fn trace_ray(ray: Ray) -> TraceResult {
         return result;
     }
 
-    // Lighting: ambient + directional + emissive surfaces
+    // Lighting: ambient + directional
     let light_dir = normalize(LIGHT_DIRECTION);
     let diffuse = max(dot(closest_hit.normal, -light_dir), 0.0);
     let ambient = 0.3;
 
-    // Direct lighting from emissive surfaces (area lights)
-    let emissive_light = sample_emissive_light(closest_hit.position, closest_hit.normal);
-
-    var final_color = closest_hit.color * (ambient + diffuse * 0.7 + emissive_light) + closest_hit.emissive;
+    var final_color = closest_hit.color * (ambient + diffuse * 0.7) + closest_hit.emissive;
 
     // Grid visualization
     if camera.show_grid > 0.5 {
@@ -625,99 +619,6 @@ fn trace_ray(ray: Ray) -> TraceResult {
     result.reflectivity = closest_hit.reflectivity;
 
     return result;
-}
-
-// Test if a ray is occluded (for shadow rays)
-fn is_occluded(ray: Ray, max_distance: f32) -> bool {
-    let num_boxes = scene_config.num_boxes;
-    let num_triangles = scene_config.num_triangles;
-
-    // Test boxes
-    for (var i = 0u; i < num_boxes; i++) {
-        let box = boxes[i];
-        let box_center = (box.min + box.max) * 0.5;
-        let box_size = box.max - box.min;
-
-        if !should_cull_lod(box_center, box_size) {
-            let hit = intersect_box(ray, box, camera.time, i);
-            if hit.hit && hit.distance < max_distance && hit.distance > 0.001 {
-                return true;
-            }
-        }
-    }
-
-    // Test triangles
-    for (var i = 0u; i < num_triangles; i++) {
-        let hit = intersect_triangle(ray, triangles[i], i);
-        if hit.hit && hit.distance < max_distance && hit.distance > 0.001 {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-// Calculate direct lighting from emissive surfaces
-fn sample_emissive_light(hit_pos: vec3<f32>, hit_normal: vec3<f32>) -> vec3<f32> {
-    var total_light = vec3<f32>(0.0);
-    let num_triangles = scene_config.num_triangles;
-
-    // Sample emissive triangles
-    for (var i = 0u; i < num_triangles; i++) {
-        let mat_id = u32(triangles[i].material_id);
-        if mat_id >= arrayLength(&materials) {
-            continue;
-        }
-
-        let material = materials[mat_id];
-
-        // Skip non-emissive materials
-        let emissive_strength = length(material.emissive);
-        if emissive_strength < 0.001 {
-            continue;
-        }
-
-        // Calculate triangle center as light position
-        let tri = triangles[i];
-        let light_pos = (tri.v0 + tri.v1 + tri.v2) / 3.0;
-        let light_normal = normalize(cross(tri.v1 - tri.v0, tri.v2 - tri.v0));
-
-        // Vector from hit point to light
-        let to_light = light_pos - hit_pos;
-        let distance = length(to_light);
-        let light_dir = to_light / distance;
-
-        // Check if light is facing the surface
-        let n_dot_l = max(dot(hit_normal, light_dir), 0.0);
-        if n_dot_l < 0.001 {
-            continue;
-        }
-
-        // Check if surface is facing the light
-        let light_facing = dot(light_normal, -light_dir);
-        if light_facing < 0.001 {
-            continue;
-        }
-
-        // Shadow ray
-        var shadow_ray: Ray;
-        shadow_ray.origin = hit_pos + hit_normal * 0.001;
-        shadow_ray.direction = light_dir;
-
-        if !is_occluded(shadow_ray, distance - 0.002) {
-            // Calculate triangle area for proper light intensity
-            let edge1 = tri.v1 - tri.v0;
-            let edge2 = tri.v2 - tri.v0;
-            let area = length(cross(edge1, edge2)) * 0.5;
-
-            // Inverse square falloff with area compensation
-            let attenuation = (area * light_facing) / (distance * distance + 1.0);
-
-            total_light += material.emissive * n_dot_l * attenuation;
-        }
-    }
-
-    return total_light;
 }
 
 @compute @workgroup_size(8, 8, 1)

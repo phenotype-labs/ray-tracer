@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod cli;
 pub mod demo;
 pub mod grid;
 pub mod grid_triangles;
