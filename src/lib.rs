@@ -2,7 +2,6 @@ pub mod camera;
 pub mod cli;
 pub mod core;
 pub mod demo;
-pub mod display;
 pub mod frame;
 pub mod grid;
 pub mod grid_triangles;
