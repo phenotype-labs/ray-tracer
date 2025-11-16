@@ -14,8 +14,8 @@ use camera::Camera;
 use renderer::RayTracer;
 
 const FPS_UPDATE_INTERVAL: f32 = 1.0;
-const INITIAL_WINDOW_WIDTH: u32 = 80;
-const INITIAL_WINDOW_HEIGHT: u32 = 80;
+const INITIAL_WINDOW_WIDTH: u32 = 600;
+const INITIAL_WINDOW_HEIGHT: u32 = 600;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
