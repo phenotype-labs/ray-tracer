@@ -2,6 +2,7 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 use crate::camera::Camera;
+use crate::frame_trace::{FrameTracer, FrameOperation, TimestampPoint};
 use crate::grid::HierarchicalGrid;
 use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_scene, create_walls_scene, create_tunnel_scene, create_reflected_scene, create_gltf_triangles, create_pyramid_triangles};
 use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
@@ -33,10 +34,12 @@ pub struct RayTracer {
     debug_info: RayDebugInfo,
     debug_pixel: Option<(u32, u32)>,
     clear_debug_requested: Arc<Mutex<bool>>,
+    frame_tracer: Arc<Mutex<FrameTracer>>,
+    no_ui: bool,
 }
 
 impl RayTracer {
-    pub async fn new(window: Arc<Window>) -> Result<Self> {
+    pub async fn new(window: Arc<Window>, no_ui: bool) -> Result<Self> {
         let size = window.inner_size();
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
@@ -52,7 +55,9 @@ impl RayTracer {
         surface.configure(&device, &surface_config);
 
         let scene_name = std::env::var("SCENE").unwrap_or_else(|_| "fractal".to_string());
-        println!("Loading scene: {}", scene_name);
+        if !no_ui {
+            println!("Loading scene: {}", scene_name);
+        }
 
         let boxes = match scene_name.as_str() {
             "composed" => create_composed_scene(),
@@ -80,7 +85,9 @@ impl RayTracer {
                 MaterialData::new_color([0.5, 0.5, 0.5, 1.0]), // Gray (base)
             ];
 
-            println!("Loaded {} triangles and {} materials for pyramid", num_tris, mats.len());
+            if !no_ui {
+                println!("Loaded {} triangles and {} materials for pyramid", num_tris, mats.len());
+            }
             (tris, mats, vec![])
         } else if scene_name == "gltf" {
             let (tris, mats, texs) = create_gltf_triangles();
@@ -233,7 +240,9 @@ impl RayTracer {
                 );
             }
 
-            println!("Created texture array: {}x{} with {} layers", max_width, max_height, textures.len());
+            if !no_ui {
+                println!("Created texture array: {}x{} with {} layers", max_width, max_height, textures.len());
+            }
             texture_array.create_view(&wgpu::TextureViewDescriptor {
                 dimension: Some(wgpu::TextureViewDimension::D2Array),
                 ..Default::default()
@@ -313,7 +322,30 @@ impl RayTracer {
             egui_wgpu::RendererOptions::default(),
         );
 
-        println!("Ray tracer initialized: {} boxes", num_boxes);
+        if !no_ui {
+            println!("Ray tracer initialized: {} boxes", num_boxes);
+        }
+
+        // Initialize frame tracer with GPU profiling support (if available)
+        let mut frame_tracer = FrameTracer::new();
+
+        // Only enable GPU profiling if device supports required features
+        let device_features = device.features();
+        if device_features.contains(wgpu::Features::TIMESTAMP_QUERY) &&
+           device_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+            let timestamp_period = queue.get_timestamp_period();
+            frame_tracer.init_gpu_profiler(&device, timestamp_period);
+            if !no_ui {
+                println!("✓ Frame tracer GPU profiling enabled (timestamp period: {}ns)", timestamp_period);
+            }
+        } else {
+            if !no_ui {
+                println!("⚠ Frame tracer GPU profiling disabled (features not supported)");
+                println!("  Frame capture will still work but without GPU timing data");
+            }
+        }
+
+        frame_tracer.init_shader_trace_buffer(&device);
 
         Ok(Self {
             device,
@@ -337,6 +369,8 @@ impl RayTracer {
             debug_info: RayDebugInfo::default(),
             debug_pixel: None,
             clear_debug_requested: Arc::new(Mutex::new(false)),
+            frame_tracer: Arc::new(Mutex::new(frame_tracer)),
+            no_ui,
         })
     }
 
@@ -355,10 +389,23 @@ impl RayTracer {
     }
 
     async fn request_device(adapter: &wgpu::Adapter) -> Result<(wgpu::Device, wgpu::Queue)> {
+        // Request timestamp query features if available
+        let supported_features = adapter.features();
+        let mut requested_features = wgpu::Features::empty();
+
+        // Try to enable timestamp queries with encoder support
+        if supported_features.contains(wgpu::Features::TIMESTAMP_QUERY) {
+            requested_features |= wgpu::Features::TIMESTAMP_QUERY;
+        }
+
+        if supported_features.contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS) {
+            requested_features |= wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        }
+
         adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: requested_features,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
                 experimental_features: Default::default(),
@@ -780,13 +827,20 @@ impl RayTracer {
         window: &Window,
         fps: f32,
         time: f32,
+        frame_number: u64,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
+        // Begin frame trace with correct frame number
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.begin_frame_with_number(frame_number);
+        }
+
         // Debug output every 60 frames to show rendering is active
         use std::sync::atomic::{AtomicU32, Ordering};
         static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
 
         let frame = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
-        if frame % 60 == 0 {
+        if frame % 60 == 0 && !self.no_ui {
             println!("🎨 Rendering active - Frame: {}, Camera: ({:.1}, {:.1}, {:.1})",
                 frame,
                 camera.position.x,
@@ -796,11 +850,22 @@ impl RayTracer {
 
         let show_grid = *self.show_grid.lock().unwrap();
         let camera_uniform = camera.to_uniform(time, self.size.height as f32, DEFAULT_FOV, show_grid);
-        self.queue.write_buffer(
-            &self.camera_buffer,
-            0,
-            bytemuck::cast_slice(&[camera_uniform]),
-        );
+
+        let camera_array = [camera_uniform];
+        let camera_data = bytemuck::cast_slice(&camera_array);
+        self.queue.write_buffer(&self.camera_buffer, 0, camera_data);
+
+        // Log camera buffer write
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.log_operation(FrameOperation::BufferWrite {
+                name: "Camera Uniform".to_string(),
+                offset: 0,
+                size: camera_data.len() as u64,
+                data_hash: crate::frame_trace::calculate_data_hash(camera_data),
+                timestamp_us: 0, // Will be filled by actual timing
+            });
+        }
 
         let debug_params = if let Some((x, y)) = self.debug_pixel {
             DebugParams {
@@ -815,11 +880,22 @@ impl RayTracer {
                 _pad: 0,
             }
         };
-        self.queue.write_buffer(
-            &self.debug_params_buffer,
-            0,
-            bytemuck::cast_slice(&[debug_params]),
-        );
+
+        let debug_array = [debug_params];
+        let debug_data = bytemuck::cast_slice(&debug_array);
+        self.queue.write_buffer(&self.debug_params_buffer, 0, debug_data);
+
+        // Log debug params buffer write
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.log_operation(FrameOperation::BufferWrite {
+                name: "Debug Params".to_string(),
+                offset: 0,
+                size: debug_data.len() as u64,
+                data_hash: crate::frame_trace::calculate_data_hash(debug_data),
+                timestamp_us: 0,
+            });
+        }
 
         let output = self.surface.get_current_texture()?;
         let view = output
@@ -832,6 +908,12 @@ impl RayTracer {
                 label: Some("Encoder"),
             });
 
+        // Write timestamp: Compute pass start
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::ComputePassStart, "Compute Pass Start");
+        }
+
         {
             let mut compute_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
                 label: Some("Compute Pass"),
@@ -843,6 +925,25 @@ impl RayTracer {
             let workgroup_size_x = self.size.width.div_ceil(WORKGROUP_SIZE);
             let workgroup_size_y = self.size.height.div_ceil(WORKGROUP_SIZE);
             compute_pass.dispatch_workgroups(workgroup_size_x, workgroup_size_y, 1);
+
+            // Log compute dispatch
+            {
+                let mut tracer = self.frame_tracer.lock().unwrap();
+                let total_invocations = (workgroup_size_x * workgroup_size_y * WORKGROUP_SIZE * WORKGROUP_SIZE) as u64;
+                tracer.log_operation(FrameOperation::ComputeDispatch {
+                    label: "Ray Tracing Compute".to_string(),
+                    workgroups: (workgroup_size_x, workgroup_size_y, 1),
+                    total_invocations,
+                    shader_name: "raytracer_unified.wgsl".to_string(),
+                    timestamp_us: 0,
+                });
+            }
+        }
+
+        // Write timestamp: Compute pass end
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::ComputePassEnd, "Compute Pass End");
         }
 
         if self.debug_pixel.is_some() {
@@ -882,7 +983,7 @@ impl RayTracer {
             staging_buffer.unmap();
 
             // Output debug info when we have a pixel selected
-            if self.debug_info.hit > 0.5 {
+            if self.debug_info.hit > 0.5 && !self.no_ui {
                 println!("🎯 Ray HIT at pixel {:?} - Distance: {:.2}, Object: {:.0}, Color: ({:.2}, {:.2}, {:.2})",
                     self.debug_pixel,
                     self.debug_info.distance,
@@ -895,6 +996,12 @@ impl RayTracer {
             encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("Encoder 2"),
             });
+        }
+
+        // Write timestamp: Display pass start
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::DisplayPassStart, "Display Pass Start");
         }
 
         {
@@ -916,257 +1023,28 @@ impl RayTracer {
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.render_bind_group, &[]);
             render_pass.draw(0..6, 0..1);
+
+            // Log render pass
+            {
+                let mut tracer = self.frame_tracer.lock().unwrap();
+                tracer.log_operation(FrameOperation::RenderPass {
+                    label: "Display Pass".to_string(),
+                    draw_calls: 1,
+                    vertices_drawn: 6,
+                    timestamp_us: 0,
+                });
+            }
+        }
+
+        // Write timestamp: Display pass end
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::DisplayPassEnd, "Display Pass End");
         }
 
         let raw_input = self.egui_state.take_egui_input(window);
-        let current_scene = self.current_scene.clone();
-        let needs_reload = self.needs_reload.clone();
-        let show_grid = self.show_grid.clone();
-        let clear_debug_requested = self.clear_debug_requested.clone();
-        let num_boxes = self.num_boxes;
-        let resolution = (self.size.width, self.size.height);
-        let debug_pixel = self.debug_pixel;
-        let debug_info = self.debug_info;
-
-        let full_output = self.egui_ctx.run(raw_input, |ctx| {
-            egui::Window::new("Debug Info")
-                .title_bar(true)
-                .resizable(false)
-                .fixed_pos(egui::pos2(10.0, 10.0))
-                .default_width(250.0)
-                .show(ctx, |ui| {
-                    ui.heading(
-                        egui::RichText::new(format!("{:.0} FPS", fps))
-                            .size(32.0)
-                            .color(egui::Color32::from_rgb(74, 158, 255)),
-                    );
-
-                    let frame_time_ms = if fps > 0.0 { 1000.0 / fps } else { 0.0 };
-                    ui.label(
-                        egui::RichText::new(format!("{:.2} ms", frame_time_ms))
-                            .size(14.0)
-                            .color(egui::Color32::GRAY),
-                    );
-
-                    ui.add_space(10.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-
-                    ui.label(
-                        egui::RichText::new("Camera")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(100, 200, 100)),
-                    );
-                    ui.monospace(format!(
-                        "Pos: ({:.2}, {:.2}, {:.2})",
-                        camera.position.x, camera.position.y, camera.position.z
-                    ));
-                    ui.monospace(format!(
-                        "Yaw: {:.1}° Pitch: {:.1}°",
-                        camera.yaw.to_degrees(),
-                        camera.pitch.to_degrees()
-                    ));
-
-                    ui.add_space(5.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-
-                    ui.label(
-                        egui::RichText::new("Scene")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(200, 150, 100)),
-                    );
-                    ui.monospace(format!("Objects: {}", num_boxes));
-                    ui.monospace(format!("Name: {}", current_scene.lock().unwrap()));
-
-                    ui.add_space(5.0);
-                    ui.separator();
-                    ui.add_space(5.0);
-
-                    ui.label(
-                        egui::RichText::new("Rendering")
-                            .size(16.0)
-                            .color(egui::Color32::from_rgb(200, 100, 200)),
-                    );
-                    ui.monospace(format!("Resolution: {}x{}", resolution.0, resolution.1));
-                    ui.monospace(format!("Time: {:.2}s", time));
-                });
-
-            egui::Window::new("Scene Selector")
-                .title_bar(true)
-                .resizable(false)
-                .fixed_pos(egui::pos2(10.0, 310.0))
-                .show(ctx, |ui| {
-                    ui.vertical(|ui| {
-                        let mut scene = current_scene.lock().unwrap();
-                        let mut changed = false;
-
-                        if ui.button("Fractal Scene").clicked() {
-                            *scene = "fractal".to_string();
-                            changed = true;
-                        }
-                        if ui.button("Walls Scene").clicked() {
-                            *scene = "walls".to_string();
-                            changed = true;
-                        }
-                        if ui.button("Tunnel Scene").clicked() {
-                            *scene = "tunnel".to_string();
-                            changed = true;
-                        }
-                        if ui.button("Default Scene").clicked() {
-                            *scene = "default".to_string();
-                            changed = true;
-                        }
-                        if ui.button("Composed Scene").clicked() {
-                            *scene = "composed".to_string();
-                            changed = true;
-                        }
-                        if ui.button("glTF Scene").clicked() {
-                            *scene = "gltf".to_string();
-                            changed = true;
-                        }
-                        if ui.button("Pyramid Scene").clicked() {
-                            *scene = "pyramid".to_string();
-                            changed = true;
-                        }
-
-                        if changed {
-                            *needs_reload.lock().unwrap() = true;
-                        }
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-
-                        let mut show_grid_val = show_grid.lock().unwrap();
-                        ui.checkbox(&mut *show_grid_val, "Show Grid Cells");
-                    });
-                });
-
-            egui::Window::new("Ray Debugger")
-                .title_bar(true)
-                .resizable(true)
-                .default_pos(egui::pos2(resolution.0 as f32 - 340.0, 10.0))
-                .default_width(320.0)
-                .show(ctx, |ui| {
-                    ui.heading(
-                        egui::RichText::new("Ray Debug")
-                            .size(18.0)
-                            .color(egui::Color32::from_rgb(255, 200, 100)),
-                    );
-                    ui.add_space(5.0);
-
-                    if let Some((x, y)) = debug_pixel {
-                        ui.label(
-                            egui::RichText::new(format!("Pixel: ({}, {})", x, y))
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(100, 200, 255)),
-                        );
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-
-                        ui.label(
-                            egui::RichText::new("Ray Origin")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(150, 150, 255)),
-                        );
-                        ui.monospace(format!(
-                            "  ({:.2}, {:.2}, {:.2})",
-                            debug_info.ray_origin[0], debug_info.ray_origin[1], debug_info.ray_origin[2]
-                        ));
-
-                        ui.add_space(5.0);
-                        ui.label(
-                            egui::RichText::new("Ray Direction")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(150, 150, 255)),
-                        );
-                        ui.monospace(format!(
-                            "  ({:.3}, {:.3}, {:.3})",
-                            debug_info.ray_direction[0], debug_info.ray_direction[1], debug_info.ray_direction[2]
-                        ));
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-
-                        if debug_info.hit > 0.5 {
-                            ui.label(
-                                egui::RichText::new("HIT")
-                                    .size(16.0)
-                                    .color(egui::Color32::from_rgb(100, 255, 100)),
-                            );
-
-                            ui.monospace(format!("Distance: {:.2}", debug_info.distance));
-                            ui.monospace(format!("Object ID: {:.0}", debug_info.object_id));
-                            ui.monospace(format!("Steps: {:.0}", debug_info.num_steps));
-
-                            ui.add_space(5.0);
-                            ui.label(
-                                egui::RichText::new("Hit Position")
-                                    .size(14.0)
-                                    .color(egui::Color32::from_rgb(150, 150, 255)),
-                            );
-                            ui.monospace(format!(
-                                "  ({:.2}, {:.2}, {:.2})",
-                                debug_info.hit_position[0], debug_info.hit_position[1], debug_info.hit_position[2]
-                            ));
-
-                            ui.add_space(5.0);
-                            ui.label(
-                                egui::RichText::new("Hit Normal")
-                                    .size(14.0)
-                                    .color(egui::Color32::from_rgb(150, 150, 255)),
-                            );
-                            ui.monospace(format!(
-                                "  ({:.2}, {:.2}, {:.2})",
-                                debug_info.hit_normal[0], debug_info.hit_normal[1], debug_info.hit_normal[2]
-                            ));
-
-                            ui.add_space(5.0);
-                            ui.label(
-                                egui::RichText::new("Surface Color")
-                                    .size(14.0)
-                                    .color(egui::Color32::from_rgb(150, 150, 255)),
-                            );
-                            ui.monospace(format!(
-                                "  ({:.2}, {:.2}, {:.2})",
-                                debug_info.hit_color[0], debug_info.hit_color[1], debug_info.hit_color[2]
-                            ));
-                        } else {
-                            ui.label(
-                                egui::RichText::new("MISS")
-                                    .size(16.0)
-                                    .color(egui::Color32::from_rgb(255, 100, 100)),
-                            );
-                            ui.monospace(format!("Steps: {:.0}", debug_info.num_steps));
-                        }
-
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-
-                        if ui.button("Clear Debug Pixel").clicked() {
-                            *clear_debug_requested.lock().unwrap() = true;
-                        }
-                    } else {
-                        ui.label("Click on a pixel to debug its ray");
-                        ui.add_space(10.0);
-                        ui.separator();
-                        ui.add_space(5.0);
-
-                        ui.label(
-                            egui::RichText::new("Manual Entry")
-                                .size(14.0)
-                                .color(egui::Color32::from_rgb(150, 150, 255)),
-                        );
-                        ui.label("Enter pixel coordinates:");
-                        ui.add_space(5.0);
-                        ui.label("(Coming soon)");
-                    }
-                });
+        let full_output = self.egui_ctx.run(raw_input, |_ctx| {
+            // No UI windows - completely clean
         });
 
         self.egui_state
@@ -1192,6 +1070,12 @@ impl RayTracer {
             &tris,
             &screen_descriptor,
         );
+
+        // Write timestamp: UI pass start
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::UIPassStart, "UI Pass Start");
+        }
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1225,17 +1109,184 @@ impl RayTracer {
                 .render(render_pass_static, &tris, &screen_descriptor);
         }
 
+        // Write timestamp: UI pass end
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.write_timestamp(&mut encoder, TimestampPoint::UIPassEnd, "UI Pass End");
+        }
+
         for id in &full_output.textures_delta.free {
             self.egui_renderer.free_texture(id);
         }
 
+        // Resolve GPU timestamp queries
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            if tracer.should_capture() {
+                // Resolve timestamp queries before submit
+                if let Some(profiler) = &mut tracer.profiler {
+                    profiler.resolve_queries(&mut encoder);
+                }
+            }
+        }
+
+        // Log submit operation
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.log_operation(FrameOperation::Submit {
+                command_buffer_count: 1,
+                timestamp_us: 0,
+            });
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
+
+        // Log present operation
+        {
+            let mut tracer = self.frame_tracer.lock().unwrap();
+            tracer.log_operation(FrameOperation::Present {
+                timestamp_us: 0,
+            });
+        }
+
         output.present();
+
+        // Finalize frame trace (synchronous with device polling)
+        {
+            let should_capture = self.frame_tracer.lock().unwrap().should_capture();
+            if should_capture {
+                // Need to finalize synchronously to access device.poll()
+                let frame_tracer = self.frame_tracer.clone();
+                let device = &self.device;
+
+                pollster::block_on(async {
+                    // First, ensure GPU work is complete
+                    device.poll(wgpu::PollType::Wait {
+                        submission_index: None,
+                        timeout: None,
+                    }).ok();
+
+                    // Now finalize the frame trace
+                    let mut tracer = frame_tracer.lock().unwrap();
+
+                    // Read GPU timestamps if profiler exists
+                    if let Some(profiler) = &tracer.profiler {
+                        let buffer_slice = profiler.readback_buffer.slice(..);
+                        let (tx, rx) = futures::channel::oneshot::channel();
+
+                        buffer_slice.map_async(wgpu::MapMode::Read, move |result| {
+                            tx.send(result).unwrap();
+                        });
+
+                        // Poll device to complete the mapping
+                        device.poll(wgpu::PollType::Wait {
+                            submission_index: None,
+                            timeout: None,
+                        }).ok();
+
+                        if rx.await.is_ok() {
+                            // Read timestamp data
+                            let data = buffer_slice.get_mapped_range();
+                            let timestamps: Vec<u64> = data
+                                .chunks_exact(8)
+                                .take(profiler.query_count as usize)
+                                .map(|chunk| u64::from_le_bytes(chunk.try_into().unwrap()))
+                                .collect();
+
+                            drop(data);
+                            profiler.readback_buffer.unmap();
+
+                            // Convert to GpuTimestamp structs
+                            let mut gpu_timings = Vec::new();
+                            let mut prev_timestamp = 0u64;
+
+                            for (i, &ts_raw) in timestamps.iter().enumerate() {
+                                let ts_ns = (ts_raw as f64 * profiler.timestamp_period as f64) as u64;
+                                let (point, label) = &profiler.pending_timestamps[i];
+
+                                gpu_timings.push(crate::frame_trace::GpuTimestamp {
+                                    label: label.clone(),
+                                    point: *point,
+                                    timestamp_ns: ts_ns,
+                                    delta_from_prev_ns: if i == 0 { 0 } else { ts_ns - prev_timestamp },
+                                });
+
+                                prev_timestamp = ts_ns;
+                            }
+
+                            // Update trace with GPU timings
+                            if let Some(trace) = &mut tracer.current_trace {
+                                trace.gpu_timings = gpu_timings;
+
+                                if let (Some(first), Some(last)) = (trace.gpu_timings.first(), trace.gpu_timings.last()) {
+                                    trace.gpu_duration_ns = last.timestamp_ns - first.timestamp_ns;
+                                }
+
+                                // Calculate per-pass timings
+                                trace.performance_stats.gpu_time_ms = trace.gpu_duration_ns as f64 / 1_000_000.0;
+
+                                use crate::frame_trace::TimestampPoint;
+
+                                if let (Some(start), Some(end)) = (
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::ComputePassStart),
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::ComputePassEnd),
+                                ) {
+                                    trace.performance_stats.compute_pass_ms =
+                                        (end.timestamp_ns - start.timestamp_ns) as f64 / 1_000_000.0;
+                                }
+
+                                if let (Some(start), Some(end)) = (
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::DisplayPassStart),
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::DisplayPassEnd),
+                                ) {
+                                    trace.performance_stats.display_pass_ms =
+                                        (end.timestamp_ns - start.timestamp_ns) as f64 / 1_000_000.0;
+                                }
+
+                                if let (Some(start), Some(end)) = (
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::UIPassStart),
+                                    trace.gpu_timings.iter().find(|t| t.point == TimestampPoint::UIPassEnd),
+                                ) {
+                                    trace.performance_stats.ui_pass_ms =
+                                        (end.timestamp_ns - start.timestamp_ns) as f64 / 1_000_000.0;
+                                }
+
+                                trace.performance_stats.frame_time_ms = trace.duration_ms;
+                                trace.performance_stats.cpu_time_ms = trace.duration_ms - trace.performance_stats.gpu_time_ms;
+                            }
+                        }
+                    }
+
+                    // Finalize and store the trace
+                    if let Some(mut trace) = tracer.current_trace.take() {
+                        trace.duration_ms = tracer.frame_start_time.elapsed().as_secs_f64() * 1000.0;
+                        trace.operations = tracer.operation_log.clone();
+
+                        if !self.no_ui {
+                            println!("✅ Frame {} captured: {:.2}ms total, {:.2}ms GPU",
+                                trace.frame_number,
+                                trace.duration_ms,
+                                trace.performance_stats.gpu_time_ms);
+                        }
+
+                        tracer.captured_frames.push(trace);
+                        if tracer.captured_frames.len() > tracer.max_captured_frames {
+                            tracer.captured_frames.remove(0);
+                        }
+                    }
+
+                    tracer.capture_next_frame = false;
+                    tracer.frame_number += 1;
+                });
+            }
+        }
 
         if *self.clear_debug_requested.lock().unwrap() {
             self.debug_pixel = None;
             *self.clear_debug_requested.lock().unwrap() = false;
-            println!("Debug pixel cleared");
+            if !self.no_ui {
+                println!("Debug pixel cleared");
+            }
         }
 
         Ok(())
@@ -1255,6 +1306,45 @@ impl RayTracer {
 
     pub fn set_debug_pixel(&mut self, x: u32, y: u32) {
         self.debug_pixel = Some((x, y));
-        println!("Debug pixel set to ({}, {})", x, y);
+        if !self.no_ui {
+            println!("Debug pixel set to ({}, {})", x, y);
+        }
+    }
+
+    // Frame capture methods for CLI automation
+    pub fn trigger_frame_capture(&mut self) {
+        let mut tracer = self.frame_tracer.lock().unwrap();
+        tracer.set_enabled(true);
+        tracer.trigger_capture();
+    }
+
+    pub fn get_newly_captured_frames(&self) -> Vec<u64> {
+        let tracer = self.frame_tracer.lock().unwrap();
+        tracer.get_captured_frames()
+            .iter()
+            .map(|f| f.frame_number)
+            .collect()
+    }
+
+    pub fn export_frame_json(&self, frame_number: u64, filename: &str) {
+        let tracer = self.frame_tracer.lock().unwrap();
+        if let Some(trace) = tracer.get_captured_frames().iter().find(|f| f.frame_number == frame_number) {
+            if let Ok(json) = serde_json::to_string_pretty(trace) {
+                if let Err(e) = std::fs::write(filename, json) {
+                    eprintln!("Failed to export JSON: {}", e);
+                } else if !self.no_ui {
+                    println!("💾 Exported JSON: {}", filename);
+                }
+            }
+        }
+    }
+
+    pub fn export_frame_chrome_tracing(&self, frame_number: u64, filename: &str) {
+        let tracer = self.frame_tracer.lock().unwrap();
+        if tracer.get_captured_frames().iter().any(|f| f.frame_number == frame_number) {
+            if let Err(e) = tracer.export_chrome_tracing(filename) {
+                eprintln!("Failed to export Chrome Tracing: {}", e);
+            }
+        }
     }
 }

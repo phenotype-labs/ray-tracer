@@ -1,5 +1,6 @@
-use ray_tracer::{camera, renderer};
+use ray_tracer::{camera, renderer, cli};
 
+use clap::Parser;
 use std::sync::Arc;
 use std::time::Instant;
 use winit::{
@@ -13,8 +14,8 @@ use camera::Camera;
 use renderer::RayTracer;
 
 const FPS_UPDATE_INTERVAL: f32 = 1.0;
-const INITIAL_WINDOW_WIDTH: u32 = 800;
-const INITIAL_WINDOW_HEIGHT: u32 = 600;
+const INITIAL_WINDOW_WIDTH: u32 = 80;
+const INITIAL_WINDOW_HEIGHT: u32 = 80;
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -29,10 +30,12 @@ struct App {
     time: f32,
     start_time: Instant,
     cursor_position: Option<(f64, f64)>,
+    render_frame_number: u64,
+    no_ui: bool,
 }
 
 impl App {
-    fn new() -> Self {
+    fn new(no_ui: bool) -> Self {
         let now = Instant::now();
         Self {
             window: None,
@@ -45,6 +48,8 @@ impl App {
             time: 0.0,
             start_time: now,
             cursor_position: None,
+            render_frame_number: 0,
+            no_ui,
         }
     }
 
@@ -54,7 +59,9 @@ impl App {
 
         if self.fps_update_timer >= FPS_UPDATE_INTERVAL {
             self.fps = self.frame_count as f32 / self.fps_update_timer;
-            println!("FPS: {:.1} | Time: {:.2}s", self.fps, self.time);
+            if !self.no_ui {
+                println!("FPS: {:.1} | Time: {:.2}s", self.fps, self.time);
+            }
             self.frame_count = 0;
             self.fps_update_timer = 0.0;
         }
@@ -80,7 +87,7 @@ impl ApplicationHandler for App {
                 }
             };
 
-            let raytracer = match pollster::block_on(RayTracer::new(window.clone())) {
+            let raytracer = match pollster::block_on(RayTracer::new(window.clone(), self.no_ui)) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!("Failed to initialize ray tracer: {}", e);
@@ -142,10 +149,12 @@ impl ApplicationHandler for App {
                 if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
                     if raytracer.needs_reload() {
                         let new_scene = raytracer.get_current_scene();
-                        println!("Reloading scene: {}", new_scene);
+                        if !self.no_ui {
+                            println!("Reloading scene: {}", new_scene);
+                        }
                         std::env::set_var("SCENE", &new_scene);
 
-                        match pollster::block_on(RayTracer::new(window.clone())) {
+                        match pollster::block_on(RayTracer::new(window.clone(), self.no_ui)) {
                             Ok(new_raytracer) => {
                                 *raytracer = new_raytracer;
                                 self.camera = Camera::new();
@@ -156,9 +165,11 @@ impl ApplicationHandler for App {
                         }
                     }
 
-                    if let Err(e) = raytracer.render(&self.camera, window, self.fps, self.time) {
+                    if let Err(e) = raytracer.render(&self.camera, window, self.fps, self.time, self.render_frame_number) {
                         eprintln!("Render error: {}", e);
                     }
+
+                    self.render_frame_number += 1;
                 }
             }
             _ => {}
@@ -175,10 +186,15 @@ impl ApplicationHandler for App {
 fn main() -> Result<()> {
     env_logger::init();
 
-    let event_loop = EventLoop::new()?;
-    let mut app = App::new();
+    let args = cli::Cli::parse();
+    let no_ui = args.no_ui;
 
-    println!("Ray Tracer - Controls: WASD (move), Q/E (rotate), Space/Shift (up/down), Escape to quit");
+    let event_loop = EventLoop::new()?;
+    let mut app = App::new(no_ui);
+
+    if !no_ui {
+        println!("Ray Tracer - Controls: WASD (move), Q/E (rotate), Space/Shift (up/down), Escape to quit");
+    }
     event_loop.run_app(&mut app)?;
 
     Ok(())
