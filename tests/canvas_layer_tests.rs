@@ -1,5 +1,5 @@
 use ray_tracer::core::{
-    Button, Canvas, CanvasLayerBuilder, CanvasLogic, Controller, DisplayContext, DrawOp, Frame,
+    Button, Canvas, CanvasLayerBuilder, CanvasLogic, Controller, DisplayContext, DrawOp,
     LayerLogic, LayerStack,
 };
 
@@ -512,7 +512,7 @@ fn test_canvas_layer_builder_default() {
 
     let layer = CanvasLayerBuilder::new(100, 100, update_fn).build();
 
-    assert_eq!(layer.target_fps(), 60.0);
+    assert!((layer.target_fps() - 60.0).abs() < 0.01);
     assert_eq!(layer.priority(), 0);
 }
 
@@ -527,7 +527,7 @@ fn test_canvas_layer_builder_custom() {
         .priority(5)
         .build();
 
-    assert_eq!(layer.target_fps(), 30.0);
+    assert!((layer.target_fps() - 30.0).abs() < 0.01);
     assert_eq!(layer.priority(), 5);
 }
 
@@ -550,9 +550,9 @@ fn test_canvas_layer_in_stack() {
     let stack = LayerStack::new().with_layer(layer);
     let controller = MockController;
 
-    // First update - will trigger since time >= 1/60
-    let frame = Frame { number: 0, time: 0.017, delta: 0.017, pixels: Vec::new() };
-    let updated_stack = stack.update(&frame, &controller);
+    // First update - will trigger since delta >= 1/60
+    let delta = 0.017;
+    let updated_stack = stack.update(delta, &controller);
 
     let context = DisplayContext::new(100, 100);
     let mask = vec![true; 100 * 100];
@@ -587,9 +587,9 @@ fn test_multiple_canvas_layers() {
         .with_layer(bg_layer)
         .with_layer(fg_layer);
 
-    let frame = Frame { number: 0, time: 0.0, delta: 0.0, pixels: Vec::new() };
+    let delta = 0.017;
     let controller = MockController;
-    let updated_stack = stack.update(&frame, &controller);
+    let updated_stack = stack.update(delta, &controller);
 
     let context = DisplayContext::new(100, 100);
     let mask = vec![true; 100 * 100];
@@ -615,17 +615,14 @@ fn test_canvas_layer_timing() {
 
     let controller = MockController;
 
-    // First update at t=0.0 should not trigger
-    let frame1 = Frame { number: 0, time: 0.0, delta: 0.0, pixels: Vec::new() };
-    let layer = layer.update(&frame1, &controller);
+    // First update - small delta, should not trigger
+    let layer = layer.update(0.01, &controller);
 
-    // Update at t=0.016 should not trigger (need 1/30 = 0.033s)
-    let frame2 = Frame { number: 1, time: 0.016, delta: 0.016, pixels: Vec::new() };
-    let layer = layer.update(&frame2, &controller);
+    // Second update - still accumulating (total 0.026s < 0.033s)
+    let layer = layer.update(0.016, &controller);
 
-    // Update at t=0.034 should trigger
-    let frame3 = Frame { number: 2, time: 0.034, delta: 0.018, pixels: Vec::new() };
-    let _layer = layer.update(&frame3, &controller);
+    // Third update - now trigger (total 0.044s >= 0.033s)
+    let _layer = layer.update(0.018, &controller);
 
     unsafe {
         assert!(UPDATE_COUNT >= 1);

@@ -1,4 +1,5 @@
 pub mod canvas_layer;
+pub mod clock;
 pub mod controller;
 pub mod display_context;
 pub mod frame;
@@ -10,6 +11,7 @@ pub mod timer;
 pub mod window;
 
 pub use canvas_layer::*;
+pub use clock::*;
 pub use controller::*;
 pub use display_context::*;
 pub use frame::*;

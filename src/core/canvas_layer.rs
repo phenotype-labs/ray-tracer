@@ -521,7 +521,7 @@ mod tests {
             .priority(5)
             .build();
 
-        assert_eq!(layer.target_fps(), 30.0);
+        assert!((layer.target_fps() - 30.0).abs() < 0.01);
         assert_eq!(layer.priority(), 5);
     }
 }

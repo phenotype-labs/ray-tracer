@@ -4,7 +4,7 @@
 /// including drawing primitives, compositing multiple layers, and animation.
 
 use ray_tracer::core::{
-    Button, Canvas, CanvasLayerBuilder, Controller, DisplayContext, DrawOp, Frame, LayerStack,
+    Button, Canvas, CanvasLayerBuilder, Controller, DisplayContext, DrawOp, LayerStack,
 };
 
 /// Mock controller for demonstration
@@ -178,16 +178,11 @@ fn main() {
 
     let stack = LayerStack::new().with_layer(bg).with_layer(mg).with_layer(ui);
 
-    let frame = Frame {
-        number: 0,
-        time: 0.0,
-        delta: 0.016,
-        pixels: Vec::new(),
-    };
+    let delta = 0.016;
     let controller = DemoController;
     let context = DisplayContext::new(400, 300);
 
-    let updated_stack = stack.update(&frame, &controller);
+    let updated_stack = stack.update(delta, &controller);
     let mask = vec![true; 400 * 300];
     let outputs: Vec<_> = updated_stack.render(&mask, &context).collect();
 
