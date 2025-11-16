@@ -1,17 +1,18 @@
-use ray_tracer::{camera, renderer, cli};
+use ray_tracer::{camera, renderer, cli, frame, window};
 
 use clap::Parser;
 use std::sync::Arc;
-use std::time::Instant;
 use winit::{
     application::ApplicationHandler,
     event::*,
     event_loop::{ActiveEventLoop, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::{Window, WindowId},
+    window::{Window as WinitWindow, WindowId},
 };
 use camera::Camera;
 use renderer::RayTracer;
+use frame::{FrameIterator, FrameInfo};
+use window::Window;
 
 const FPS_UPDATE_INTERVAL: f32 = 1.0;
 const INITIAL_WINDOW_WIDTH: u32 = 600;
@@ -20,50 +21,53 @@ const INITIAL_WINDOW_HEIGHT: u32 = 600;
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 struct App {
-    window: Option<Arc<Window>>,
+    window: Option<Window>,
     raytracer: Option<RayTracer>,
     camera: Camera,
-    last_frame_time: Instant,
+    frames: FrameIterator,
     frame_count: u32,
     fps: f32,
     fps_update_timer: f32,
-    time: f32,
-    start_time: Instant,
     cursor_position: Option<(f64, f64)>,
-    render_frame_number: u64,
     no_ui: bool,
+    should_exit: bool,
 }
 
 impl App {
     fn new(no_ui: bool) -> Self {
-        let now = Instant::now();
         Self {
             window: None,
             raytracer: None,
             camera: Camera::new(),
-            last_frame_time: now,
+            frames: FrameIterator::new(),
             frame_count: 0,
             fps: 0.0,
             fps_update_timer: 0.0,
-            time: 0.0,
-            start_time: now,
             cursor_position: None,
-            render_frame_number: 0,
             no_ui,
+            should_exit: false,
         }
     }
 
-    fn update_fps(&mut self, delta: f32) {
+    fn update_fps(&mut self, frame: &FrameInfo) {
         self.frame_count += 1;
-        self.fps_update_timer += delta;
+        self.fps_update_timer += frame.delta;
 
         if self.fps_update_timer >= FPS_UPDATE_INTERVAL {
             self.fps = self.frame_count as f32 / self.fps_update_timer;
             if !self.no_ui {
-                println!("FPS: {:.1} | Time: {:.2}s", self.fps, self.time);
+                println!("FPS: {:.1} | Time: {:.2}s", self.fps, frame.time);
             }
             self.frame_count = 0;
             self.fps_update_timer = 0.0;
+        }
+    }
+
+    fn draw_frame(&mut self, frame: &FrameInfo) {
+        if let (Some(window), Some(raytracer)) = (&self.window, &mut self.raytracer) {
+            if let Err(e) = window.draw(raytracer, &self.camera, self.fps, frame) {
+                eprintln!("Render error: {}", e);
+            }
         }
     }
 }
@@ -71,8 +75,8 @@ impl App {
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_none() {
-            let window = match event_loop.create_window(
-                Window::default_attributes()
+            let winit_window = match event_loop.create_window(
+                WinitWindow::default_attributes()
                     .with_title("Ray Tracer")
                     .with_inner_size(winit::dpi::LogicalSize::new(
                         INITIAL_WINDOW_WIDTH,
@@ -87,7 +91,7 @@ impl ApplicationHandler for App {
                 }
             };
 
-            let raytracer = match pollster::block_on(RayTracer::new(window.clone(), self.no_ui)) {
+            let raytracer = match pollster::block_on(RayTracer::new(winit_window.clone(), self.no_ui)) {
                 Ok(rt) => rt,
                 Err(e) => {
                     eprintln!("Failed to initialize ray tracer: {}", e);
@@ -96,7 +100,7 @@ impl ApplicationHandler for App {
                 }
             };
 
-            self.window = Some(window);
+            self.window = Some(Window::new(winit_window));
             self.raytracer = Some(raytracer);
         }
     }
@@ -108,7 +112,7 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
-            if raytracer.handle_event(window, &event) {
+            if raytracer.handle_event(window.inner(), &event) {
                 return;
             }
         }
@@ -123,7 +127,7 @@ impl ApplicationHandler for App {
                         ..
                     },
                 ..
-            } => event_loop.exit(),
+            } => self.should_exit = true,
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor_position = Some((position.x, position.y));
             }
@@ -138,12 +142,10 @@ impl ApplicationHandler for App {
             }
             WindowEvent::KeyboardInput { event, .. } => self.camera.process_keyboard(&event),
             WindowEvent::RedrawRequested => {
-                let now = Instant::now();
-                let delta = now.duration_since(self.last_frame_time).as_secs_f32();
-                self.last_frame_time = now;
-                self.time = now.duration_since(self.start_time).as_secs_f32();
+                // Get next frame from iterator
+                let frame = self.frames.next().unwrap();
 
-                self.update_fps(delta);
+                self.update_fps(&frame);
                 self.camera.update();
 
                 if let (Some(raytracer), Some(window)) = (&mut self.raytracer, &self.window) {
@@ -154,7 +156,7 @@ impl ApplicationHandler for App {
                         }
                         std::env::set_var("SCENE", &new_scene);
 
-                        match pollster::block_on(RayTracer::new(window.clone(), self.no_ui)) {
+                        match pollster::block_on(RayTracer::new(window.inner().clone(), self.no_ui)) {
                             Ok(new_raytracer) => {
                                 *raytracer = new_raytracer;
                                 self.camera = Camera::new();
@@ -164,15 +166,16 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-
-                    if let Err(e) = raytracer.render(&self.camera, window, self.fps, self.time, self.render_frame_number) {
-                        eprintln!("Render error: {}", e);
-                    }
-
-                    self.render_frame_number += 1;
                 }
+
+                // Draw the frame using iterator pattern
+                self.draw_frame(&frame);
             }
             _ => {}
+        }
+
+        if self.should_exit {
+            event_loop.exit();
         }
     }
 
