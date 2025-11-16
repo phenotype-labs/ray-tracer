@@ -1,5 +1,6 @@
 pub mod camera;
 pub mod cli;
+pub mod core;
 pub mod demo;
 pub mod display;
 pub mod frame;
@@ -9,7 +10,6 @@ pub mod loaders;
 pub mod math;
 pub mod renderer;
 pub mod scenes;
-pub mod traits;
 pub mod types;
 pub mod window;
 

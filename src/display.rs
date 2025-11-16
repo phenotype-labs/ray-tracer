@@ -1,4 +1,4 @@
-use crate::traits::{Controller, DisplayContext, Frame, RenderPipeline, WindowContext, WindowRenderer};
+use crate::core::{Controller, DisplayContext, Frame, RenderPipeline, WindowContext, WindowRenderer};
 
 /// Display combines rendering pipeline and window output
 pub struct Display<P: RenderPipeline, W: WindowRenderer> {
