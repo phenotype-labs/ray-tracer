@@ -5,6 +5,7 @@ pub mod game;
 pub mod layer;
 pub mod render_pipeline;
 pub mod renderer;
+pub mod timer;
 pub mod window;
 
 pub use controller::*;
@@ -14,4 +15,5 @@ pub use game::*;
 pub use layer::*;
 pub use render_pipeline::*;
 pub use renderer::*;
+pub use timer::*;
 pub use window::*;
