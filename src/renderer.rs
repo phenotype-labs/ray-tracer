@@ -178,7 +178,10 @@ impl RayTracer {
                     depth_or_array_layers: 1,
                 },
             );
-            texture.create_view(&wgpu::TextureViewDescriptor::default())
+            texture.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            })
         } else {
             // Create texture array to hold all textures
             let max_width = textures.iter().map(|t| t.width).max().unwrap_or(1);

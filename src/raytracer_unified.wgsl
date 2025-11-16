@@ -2,7 +2,7 @@
 // Based on raytracer_grid.wgsl with triangle intersection from raytracer_triangles.wgsl
 
 const GRID_LEVELS: u32 = 4u;
-const MAX_OBJECTS_PER_CELL: u32 = 256u;
+const MAX_OBJECTS_PER_CELL: u32 = 8192u;
 const EPSILON: f32 = 0.00001;
 
 struct Camera {
@@ -70,7 +70,7 @@ struct GridMetadata {
 };
 
 struct FineCellData {
-    object_indices: array<u32, 256>,
+    object_indices: array<u32, 8192>,
     count: u32,
     _pad: array<u32, 3>,
 };

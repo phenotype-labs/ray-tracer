@@ -4,7 +4,7 @@ use glam::Vec3;
 
 pub const GRID_LEVELS: usize = 4;
 pub const FINEST_CELL_SIZE: f32 = 16.0;
-pub const MAX_OBJECTS_PER_CELL: usize = 256;
+pub const MAX_OBJECTS_PER_CELL: usize = 8192;
 
 fn calculate_grid_dimensions(bounds: &AABB, cell_size: f32) -> [usize; 3] {
     let extent = bounds.max - bounds.min;
@@ -32,7 +32,7 @@ pub struct GridMetadata {
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct FineCellData {
-    pub object_indices: [u32; 256],
+    pub object_indices: [u32; MAX_OBJECTS_PER_CELL],
     pub count: u32,
     pub _pad: [u32; 3],
 }
