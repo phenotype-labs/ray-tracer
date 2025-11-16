@@ -1,9 +1,11 @@
-pub mod camera;
+pub mod controller;
+pub mod executor;
 pub mod frame;
-pub mod scene;
+pub mod game;
 pub mod window;
 
-pub use camera::*;
+pub use controller::*;
+pub use executor::*;
 pub use frame::*;
-pub use scene::*;
+pub use game::*;
 pub use window::*;

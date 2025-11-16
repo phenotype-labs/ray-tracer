@@ -1,14 +1,24 @@
-/// Window lifecycle and event handling abstraction
+/// Window dimensions
+#[derive(Debug, Clone, Copy)]
+pub struct WindowDimensions {
+    pub width: u32,
+    pub height: u32,
+}
+
+impl WindowDimensions {
+    pub fn new(width: u32, height: u32) -> Self {
+        Self { width, height }
+    }
+}
+
+/// Window abstraction - handles display and drawing
 pub trait WindowContext {
+    /// Get window dimensions in physical pixels
+    fn dimensions(&self) -> WindowDimensions;
+
+    /// Draw pixels to the window
+    fn draw(&self, pixels: &[u8]) -> Result<(), Box<dyn std::error::Error>>;
+
     /// Request the window to redraw
     fn request_redraw(&self);
-
-    /// Get the inner size of the window in physical pixels
-    fn inner_size(&self) -> (u32, u32);
-
-    /// Get the scale factor for HiDPI displays
-    fn scale_factor(&self) -> f64;
-
-    /// Set cursor visibility
-    fn set_cursor_visible(&self, visible: bool);
 }
