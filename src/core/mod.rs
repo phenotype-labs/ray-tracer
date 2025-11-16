@@ -1,3 +1,4 @@
+pub mod canvas_layer;
 pub mod controller;
 pub mod display_context;
 pub mod frame;
@@ -8,6 +9,7 @@ pub mod renderer;
 pub mod timer;
 pub mod window;
 
+pub use canvas_layer::*;
 pub use controller::*;
 pub use display_context::*;
 pub use frame::*;
