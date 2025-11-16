@@ -153,13 +153,17 @@ pub fn load_gltf_with_animation(path: impl AsRef<Path>) -> Result<(Vec<BoxData>,
 
     // Load animation data if present
     let animation_data = if animation_count > 0 {
-        let animation = gltf.animations().next().unwrap();
-        println!("Loading animation: {:?}", animation.name());
+        if let Some(animation) = gltf.animations().next() {
+            println!("Loading animation: {:?}", animation.name());
 
-        Some(AnimationData {
-            name: animation.name().unwrap_or("unnamed").to_string(),
-            duration: calculate_animation_duration(&animation, &buffers),
-        })
+            Some(AnimationData {
+                name: animation.name().unwrap_or("unnamed").to_string(),
+                duration: calculate_animation_duration(&animation, &buffers),
+            })
+        } else {
+            eprintln!("Warning: Expected {} animation(s) but none accessible", animation_count);
+            None
+        }
     } else {
         None
     };

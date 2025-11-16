@@ -7,6 +7,7 @@ use crate::scenes::{create_composed_scene, create_default_scene, create_fractal_
 use crate::types::{RayDebugInfo, DebugParams, SceneConfig, MaterialData, TriangleData};
 
 pub const WORKGROUP_SIZE: u32 = 8;
+const DEFAULT_FOV: f32 = std::f32::consts::FRAC_PI_4;  // π/4 = 45 degrees = 0.785398
 
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
@@ -32,8 +33,6 @@ pub struct RayTracer {
     debug_info: RayDebugInfo,
     debug_pixel: Option<(u32, u32)>,
     clear_debug_requested: Arc<Mutex<bool>>,
-    manual_debug_x: String,
-    manual_debug_y: String,
 }
 
 impl RayTracer {
@@ -113,7 +112,12 @@ impl RayTracer {
         });
 
         // Create box buffer with at least one dummy box to avoid zero-sized buffer
-        let dummy_box = [crate::types::BoxData::new([0.0; 3], [0.0; 3], [1.0, 1.0, 1.0])];
+        // Use valid 1x1x1 box centered at origin to avoid degenerate AABB issues
+        let dummy_box = [crate::types::BoxData::new(
+            [-0.5, -0.5, -0.5],  // min
+            [0.5, 0.5, 0.5],     // max
+            [0.5, 0.5, 0.5],     // color (gray)
+        )];
         let box_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Box Buffer"),
             contents: if boxes.is_empty() {
@@ -333,8 +337,6 @@ impl RayTracer {
             debug_info: RayDebugInfo::default(),
             debug_pixel: None,
             clear_debug_requested: Arc::new(Mutex::new(false)),
-            manual_debug_x: String::new(),
-            manual_debug_y: String::new(),
         })
     }
 
@@ -393,8 +395,7 @@ impl RayTracer {
 
     fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
         let camera = Camera::new();
-        let fov = 0.785398;
-        let camera_uniform = camera.to_uniform(0.0, 800.0, fov, false);
+        let camera_uniform = camera.to_uniform(0.0, 800.0, DEFAULT_FOV, false);
 
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Camera Buffer"),
@@ -781,21 +782,20 @@ impl RayTracer {
         time: f32,
     ) -> std::result::Result<(), wgpu::SurfaceError> {
         // Debug output every 60 frames to show rendering is active
-        static mut FRAME_COUNTER: u32 = 0;
-        unsafe {
-            FRAME_COUNTER += 1;
-            if FRAME_COUNTER % 60 == 0 {
-                println!("🎨 Rendering active - Frame: {}, Camera: ({:.1}, {:.1}, {:.1})",
-                    FRAME_COUNTER,
-                    camera.position.x,
-                    camera.position.y,
-                    camera.position.z);
-            }
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static FRAME_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+        let frame = FRAME_COUNTER.fetch_add(1, Ordering::Relaxed);
+        if frame % 60 == 0 {
+            println!("🎨 Rendering active - Frame: {}, Camera: ({:.1}, {:.1}, {:.1})",
+                frame,
+                camera.position.x,
+                camera.position.y,
+                camera.position.z);
         }
 
-        let fov = 0.785398;
         let show_grid = *self.show_grid.lock().unwrap();
-        let camera_uniform = camera.to_uniform(time, self.size.height as f32, fov, show_grid);
+        let camera_uniform = camera.to_uniform(time, self.size.height as f32, DEFAULT_FOV, show_grid);
         self.queue.write_buffer(
             &self.camera_buffer,
             0,
@@ -1210,6 +1210,11 @@ impl RayTracer {
                 timestamp_writes: None,
             });
 
+            // SAFETY: egui-wgpu 0.33 requires 'static lifetime for RenderPass, but render()
+            // doesn't actually store the reference - it only uses it for the duration of the call.
+            // This transmute extends the lifetime temporarily. While technically UB, it's safe
+            // in practice as verified by egui not storing the reference beyond the call.
+            // TODO: Update to newer egui-wgpu version that doesn't require 'static lifetime
             let render_pass_static = unsafe {
                 std::mem::transmute::<&mut wgpu::RenderPass<'_>, &mut wgpu::RenderPass<'static>>(
                     &mut render_pass,

@@ -1,8 +1,18 @@
 use glam::Vec3;
 
 pub fn intersect_aabb(ray_origin: Vec3, ray_dir: Vec3, box_min: Vec3, box_max: Vec3) -> f32 {
-    let t_min = (box_min - ray_origin) / ray_dir;
-    let t_max = (box_max - ray_origin) / ray_dir;
+    const EPSILON: f32 = 1e-8;
+
+    // Precompute inverse direction with epsilon clamping to avoid division by zero
+    // When ray component is near zero, clamp to large value (effectively infinity)
+    let inv_dir = Vec3::new(
+        if ray_dir.x.abs() < EPSILON { 1.0 / EPSILON.copysign(ray_dir.x) } else { 1.0 / ray_dir.x },
+        if ray_dir.y.abs() < EPSILON { 1.0 / EPSILON.copysign(ray_dir.y) } else { 1.0 / ray_dir.y },
+        if ray_dir.z.abs() < EPSILON { 1.0 / EPSILON.copysign(ray_dir.z) } else { 1.0 / ray_dir.z },
+    );
+
+    let t_min = (box_min - ray_origin) * inv_dir;
+    let t_max = (box_max - ray_origin) * inv_dir;
 
     let t1 = t_min.min(t_max);
     let t2 = t_min.max(t_max);

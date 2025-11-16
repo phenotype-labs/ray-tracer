@@ -65,7 +65,7 @@ impl TriangleGrid {
             let mut counts = vec![0u8; total_cells];
 
             // Count triangles in each cell
-            for (tri_idx, triangle) in triangles.iter().enumerate() {
+            for (_tri_idx, triangle) in triangles.iter().enumerate() {
                 let tri_bounds = triangle.bounds();
                 Self::mark_cells(&bounds, cell_size, &grid_size, &tri_bounds, &mut counts);
             }
@@ -119,11 +119,17 @@ impl TriangleGrid {
     }
 
     fn compute_grid_size(bounds: &AABB, cell_size: f32) -> [usize; 3] {
+        const MIN_CELL_SIZE: f32 = 0.1;
+        const MAX_GRID_DIM: usize = 1024;
+
+        // Clamp cell size to prevent memory exhaustion from tiny values
+        let safe_cell_size = cell_size.max(MIN_CELL_SIZE);
         let size = bounds.max - bounds.min;
+
         [
-            ((size.x / cell_size).ceil() as usize).max(1),
-            ((size.y / cell_size).ceil() as usize).max(1),
-            ((size.z / cell_size).ceil() as usize).max(1),
+            ((size.x / safe_cell_size).ceil() as usize).clamp(1, MAX_GRID_DIM),
+            ((size.y / safe_cell_size).ceil() as usize).clamp(1, MAX_GRID_DIM),
+            ((size.z / safe_cell_size).ceil() as usize).clamp(1, MAX_GRID_DIM),
         ]
     }
 
@@ -140,6 +146,9 @@ impl TriangleGrid {
         for x in min_cell.x.max(0)..=(max_cell.x.min(grid_size[0] as i32 - 1)) {
             for y in min_cell.y.max(0)..=(max_cell.y.min(grid_size[1] as i32 - 1)) {
                 for z in min_cell.z.max(0)..=(max_cell.z.min(grid_size[2] as i32 - 1)) {
+                    // Loop bounds guarantee x,y,z are non-negative and within grid bounds
+                    debug_assert!(x >= 0 && y >= 0 && z >= 0);
+                    debug_assert!((x as usize) < grid_size[0] && (y as usize) < grid_size[1] && (z as usize) < grid_size[2]);
                     let cell_idx = Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
                     if cell_idx < counts.len() {
                         counts[cell_idx] = counts[cell_idx].saturating_add(1);
@@ -163,6 +172,9 @@ impl TriangleGrid {
         for x in min_cell.x.max(0)..=(max_cell.x.min(grid_size[0] as i32 - 1)) {
             for y in min_cell.y.max(0)..=(max_cell.y.min(grid_size[1] as i32 - 1)) {
                 for z in min_cell.z.max(0)..=(max_cell.z.min(grid_size[2] as i32 - 1)) {
+                    // Loop bounds guarantee x,y,z are non-negative and within grid bounds
+                    debug_assert!(x >= 0 && y >= 0 && z >= 0);
+                    debug_assert!((x as usize) < grid_size[0] && (y as usize) < grid_size[1] && (z as usize) < grid_size[2]);
                     let cell_idx = Self::cell_to_index([x as usize, y as usize, z as usize], grid_size);
                     if cell_idx < cells.len() && cells[cell_idx].len() < MAX_TRIANGLES_PER_CELL {
                         cells[cell_idx].push(tri_idx);

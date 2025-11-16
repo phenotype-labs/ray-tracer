@@ -19,7 +19,7 @@ pub struct MovementState {
 }
 
 impl MovementState {
-    const fn to_direction(&self, positive: bool, negative: bool) -> f32 {
+    const fn to_direction(self, positive: bool, negative: bool) -> f32 {
         match (positive, negative) {
             (true, false) => 1.0,
             (false, true) => -1.0,
@@ -27,7 +27,7 @@ impl MovementState {
         }
     }
 
-    const fn velocity(&self) -> (f32, f32, f32) {
+    const fn velocity(self) -> (f32, f32, f32) {
         (
             self.to_direction(self.forward, self.backward),
             self.to_direction(self.right, self.left),
@@ -35,7 +35,7 @@ impl MovementState {
         )
     }
 
-    const fn rotation_velocity(&self) -> f32 {
+    const fn rotation_velocity(self) -> f32 {
         self.to_direction(self.rotate_right, self.rotate_left)
     }
 }
@@ -49,6 +49,7 @@ pub struct Camera {
 
 impl Camera {
     fn calculate_lod_factor(screen_height: f32, fov: f32) -> f32 {
+        debug_assert!(fov > 0.0 && fov < std::f32::consts::PI, "FOV must be in range (0, π)");
         screen_height / (2.0 * (fov / 2.0).tan())
     }
 
@@ -135,5 +136,11 @@ impl Camera {
                 _ => {}
             }
         }
+    }
+}
+
+impl Default for Camera {
+    fn default() -> Self {
+        Self::new()
     }
 }

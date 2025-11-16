@@ -1,0 +1,300 @@
+%% Ray Tracer Pipeline Flow Diagram
+%% WebGPU Rust Ray Tracer - Complete Architecture
+
+---
+title: Ray Tracer Pipeline Overview
+---
+
+graph TB
+    subgraph CPU["CPU Side (Rust)"]
+        Camera["Camera (camera.rs)<br/>- Position: Vec3<br/>- Yaw/Pitch<br/>- Calculate basis vectors"]
+        GridBuilder["Grid Builder (grid.rs)<br/>- 4 hierarchical levels<br/>- Cell sizes: 128→64→32→16<br/>- Insert objects into cells"]
+        GLTFLoader["glTF Loader<br/>- Parse meshes/materials<br/>- Extract textures<br/>- Build triangle buffer"]
+
+        Camera --> BufferUpload
+        GridBuilder --> BufferUpload
+        GLTFLoader --> BufferUpload
+    end
+
+    subgraph BufferUpload["GPU Buffer Upload"]
+        PerFrame["Per-Frame Uniforms<br/>• Camera (96B)<br/>• Scene Config (16B)<br/>• Debug Params (16B)"]
+        Static["Static Buffers (Once)<br/>• Grid Metadata (96B)<br/>• Coarse Grid (u8 counts)<br/>• Fine Grid (32KB/cell!)<br/>• Boxes/Triangles (geometry)<br/>• Materials (PBR data)<br/>• Texture Array (2D array)"]
+    end
+
+    BufferUpload --> Dispatch["Compute Dispatch<br/>workgroups: (width/8, height/8, 1)<br/>8x8 threads per workgroup<br/>1 thread = 1 pixel"]
+
+    subgraph GPU["GPU Side (WGSL Compute Shader)"]
+        Dispatch --> RayGen
+
+        RayGen["Stage 1: Ray Generation<br/>pixel → UV → NDC<br/>ray.dir = camera.forward +<br/>  camera.right * ndc.x * aspect * fov +<br/>  camera.up * -ndc.y * fov<br/>ray.origin = camera.position"]
+
+        RayGen --> BounceLoop["Bounce Loop (MAX 8)"]
+
+        BounceLoop --> MovingBoxPass["2A: Moving Box Pre-Pass<br/>Brute force test last 3 boxes<br/>Interpolate: mix(center0, center1, sin(time))"]
+
+        MovingBoxPass --> GridBounds["2B: Grid Bounds Check<br/>ray inside grid?<br/>NO → intersect_aabb(grid)<br/>  miss → SKY<br/>  hit → entry_point<br/>YES → entry_point = ray.origin"]
+
+        GridBounds --> DDASetup["2C: DDA Setup<br/>current_cell = world_to_grid(entry)<br/>step = sign(ray.direction)<br/>t_delta = abs(cell_size / ray.dir)<br/>t_max = (boundary - ray_pos) / ray.dir"]
+
+        DDASetup --> DDALoop["2D: DDA Traversal Loop (max 200)"]
+
+        DDALoop --> CellTest["Get Fine Cell Data<br/>idx = x + y*nx + z*nx*ny<br/>cell = fine_cells[idx]<br/>count ≤ 8192"]
+
+        CellTest --> ObjectLoop["For j = 0 to count"]
+
+        ObjectLoop --> ObjType{"obj_id < num_boxes?"}
+
+        ObjType -->|YES| IntersectBox["INTERSECT_BOX<br/>AABB slab method<br/>Calculate normal from hit face"]
+        ObjType -->|NO| IntersectTriangle["INTERSECT_TRIANGLE<br/>Möller-Trumbore<br/>Texture sampling<br/>Alpha masking<br/>Normal mapping"]
+
+        IntersectBox --> KeepClosest["Keep closest hit"]
+        IntersectTriangle --> KeepClosest
+
+        KeepClosest --> EarlyExit{"hit.distance <<br/>min(t_max)?"}
+        EarlyExit -->|YES| Shading
+        EarlyExit -->|NO| StepCell
+
+        StepCell["Step to Next Cell<br/>Choose axis with min(t_max)<br/>current_cell[axis] += step[axis]<br/>t_max[axis] += t_delta[axis]"]
+
+        StepCell --> BoundsCheck{"Cell in bounds?"}
+        BoundsCheck -->|YES| DDALoop
+        BoundsCheck -->|NO| Shading
+
+        Shading["2E: Shading"]
+
+        Shading --> Ambient["Ambient = 0.3"]
+        Shading --> Diffuse["Diffuse<br/>max(dot(N, -light_dir), 0) * 0.7<br/>light_dir = (0.5, -1.0, 0.3)"]
+        Shading --> Emissive["Emissive Area Lights<br/>For each triangle with emissive > 0"]
+
+        Emissive --> ShadowRay["SHADOW RAY (BRUTE FORCE!)<br/>Test ALL boxes O(N)<br/>Test ALL triangles O(M)<br/>No grid acceleration ⚠️"]
+
+        ShadowRay --> AreaLight["area = 0.5 * |cross(edge1, edge2)|<br/>attenuation = area * facing / (dist² + 1)<br/>light += emissive * n_dot_l * attenuation"]
+
+        Ambient --> FinalColor["surface_color = base_color *<br/>  (ambient + diffuse + light)<br/>accumulated += surface_color *<br/>  (1 - reflectivity) * multiplier"]
+        Diffuse --> FinalColor
+        AreaLight --> FinalColor
+
+        FinalColor --> ReflectCheck{"reflectivity <<br/>0.01?"}
+
+        ReflectCheck -->|YES| Output
+        ReflectCheck -->|NO| NextBounce["multiplier *= reflectivity<br/>ray.dir = reflect(ray.dir, normal)<br/>ray.origin = hit_pos + normal * 0.001"]
+
+        NextBounce --> BounceLoop
+
+        Output["textureStore(output_texture,<br/>  pixel_xy,<br/>  vec4(accumulated_color, 1.0))"]
+    end
+
+    Output --> Display["Display Pipeline<br/>Render Pass<br/>Fullscreen Triangle<br/>Fragment Shader<br/>↓<br/>Swapchain"]
+
+    style CPU fill:#e1f5ff
+    style GPU fill:#fff4e1
+    style BufferUpload fill:#f0f0f0
+    style ShadowRay fill:#ffcccc,stroke:#ff0000,stroke-width:3px
+    style DDALoop fill:#ccffcc
+    style BounceLoop fill:#ffccff
+
+---
+title: DDA 3D Grid Traversal Algorithm
+---
+
+flowchart TD
+    Start["Start DDA Traversal"] --> Entry["entry_point from bounds check"]
+
+    Entry --> Init["Initialize:<br/>current_cell = world_to_grid(entry_point)<br/><br/>step.x = sign(ray.direction.x)<br/>step.y = sign(ray.direction.y)<br/>step.z = sign(ray.direction.z)"]
+
+    Init --> CalcDelta["Calculate t_delta (constant):<br/><br/>t_delta.x = |cell_size / ray.direction.x|<br/>t_delta.y = |cell_size / ray.direction.y|<br/>t_delta.z = |cell_size / ray.direction.z|<br/><br/>These never change!"]
+
+    CalcDelta --> CalcMax["Calculate t_max (initial):<br/><br/>next_boundary = cell_corner + step * cell_size<br/><br/>t_max.x = (next_boundary.x - ray_pos.x) / ray.dir.x<br/>t_max.y = (next_boundary.y - ray_pos.y) / ray.dir.y<br/>t_max.z = (next_boundary.z - ray_pos.z) / ray.dir.z"]
+
+    CalcMax --> LoopStart["Loop counter i = 0"]
+
+    LoopStart --> LoopCheck{"i < 200?"}
+
+    LoopCheck -->|NO| ReturnHit["Return closest_hit"]
+
+    LoopCheck -->|YES| GetCell["Get fine cell data:<br/>idx = current_cell.x +<br/>      current_cell.y * nx +<br/>      current_cell.z * nx * ny<br/><br/>cell = fine_cells[idx]<br/>count = cell.count"]
+
+    GetCell --> TestObjects["For j = 0 to count:<br/>  obj_id = cell.object_indices[j]<br/>  IF obj_id < num_boxes:<br/>    test box<br/>  ELSE:<br/>    test triangle[obj_id - num_boxes]<br/>  <br/>  Keep closest hit"]
+
+    TestObjects --> EarlyCheck{"hit found AND<br/>hit.distance <<br/>min(t_max)?"}
+
+    EarlyCheck -->|YES| ReturnHit
+
+    EarlyCheck -->|NO| ChooseAxis{"Which axis has<br/>smallest t_max?"}
+
+    ChooseAxis -->|X| StepX["current_cell.x += step.x<br/>t_max.x += t_delta.x"]
+    ChooseAxis -->|Y| StepY["current_cell.y += step.y<br/>t_max.y += t_delta.y"]
+    ChooseAxis -->|Z| StepZ["current_cell.z += step.z<br/>t_max.z += t_delta.z"]
+
+    StepX --> BoundsX{"current_cell.x<br/>in bounds?"}
+    StepY --> BoundsY{"current_cell.y<br/>in bounds?"}
+    StepZ --> BoundsZ{"current_cell.z<br/>in bounds?"}
+
+    BoundsX -->|NO| ReturnHit
+    BoundsY -->|NO| ReturnHit
+    BoundsZ -->|NO| ReturnHit
+
+    BoundsX -->|YES| Increment
+    BoundsY -->|YES| Increment
+    BoundsZ -->|YES| Increment
+
+    Increment["i++"] --> LoopCheck
+
+    style CalcDelta fill:#ccffcc
+    style ChooseAxis fill:#ffccff
+    style EarlyCheck fill:#ffffcc
+    style ReturnHit fill:#ccccff
+
+---
+title: Intersection Algorithms Detail
+---
+
+flowchart LR
+    subgraph BoxIntersect["INTERSECT_BOX (AABB Slab Method)"]
+        BoxInput["Input:<br/>ray, box.center,<br/>box.half_size, time"] --> BoxInterp["Interpolate position:<br/>t_lerp = (sin(time*2)+1)*0.5<br/>center = mix(center0,<br/>            center1,<br/>            t_lerp)"]
+
+        BoxInterp --> BoxBounds["box_min = center - half_size<br/>box_max = center + half_size"]
+
+        BoxBounds --> BoxSlab["Slab test:<br/>inv_dir = 1.0 / ray.direction<br/>t_min = (box_min - ray.origin) * inv_dir<br/>t_max = (box_max - ray.origin) * inv_dir<br/><br/>t1 = min(t_min, t_max)<br/>t2 = max(t_min, t_max)<br/><br/>t_near = max(t1.x, t1.y, t1.z)<br/>t_far = min(t2.x, t2.y, t2.z)"]
+
+        BoxSlab --> BoxCheck{"t_near > t_far<br/>OR t_far < 0?"}
+
+        BoxCheck -->|YES| BoxMiss["MISS"]
+        BoxCheck -->|NO| BoxNormal["Calculate normal:<br/>p = hit_pos - center<br/>d = abs(p) - half_size<br/><br/>normal = axis with<br/>         largest d component"]
+
+        BoxNormal --> BoxHit["HIT:<br/>distance, position,<br/>normal, color,<br/>reflectivity"]
+    end
+
+    subgraph TriIntersect["INTERSECT_TRIANGLE (Möller-Trumbore)"]
+        TriInput["Input:<br/>ray, triangle<br/>(v0, v1, v2),<br/>(uv0, uv1, uv2),<br/>material"] --> TriEdges["edge1 = v1 - v0<br/>edge2 = v2 - v0"]
+
+        TriEdges --> TriBary["h = cross(ray.dir, edge2)<br/>a = dot(edge1, h)<br/><br/>IF |a| < ε: MISS (parallel)<br/><br/>f = 1.0 / a<br/>s = ray.origin - v0<br/>u = f * dot(s, h)<br/><br/>IF u < 0 OR u > 1: MISS"]
+
+        TriBary --> TriBary2["q = cross(s, edge1)<br/>v = f * dot(ray.dir, q)<br/><br/>IF v < 0 OR u+v > 1: MISS<br/><br/>t = f * dot(edge2, q)<br/><br/>IF t < ε: MISS"]
+
+        TriBary2 --> TriUV["w = 1.0 - u - v<br/>uv = uv0*w + uv1*u + uv2*v"]
+
+        TriUV --> TriTex["base_color =<br/>  textureSampleLevel(<br/>    texture_array,<br/>    sampler,<br/>    uv,<br/>    material.texture_index,<br/>    lod=0.0)"]
+
+        TriTex --> TriAlpha{"material.alpha_mode<br/>== MASK?"}
+
+        TriAlpha -->|YES| TriAlphaTest{"base_color.a <<br/>alpha_cutoff?"}
+        TriAlphaTest -->|YES| TriMiss["MISS"]
+        TriAlphaTest -->|NO| TriNormal
+        TriAlpha -->|NO| TriNormal
+
+        TriNormal["Normal mapping:<br/>IF normal_texture_index >= 0:<br/>  tangent_normal =<br/>    textureSampleLevel(...)*2-1<br/>  normal = TBN * tangent_normal<br/>ELSE:<br/>  normal = normalize(<br/>           cross(edge1, edge2))"]
+
+        TriNormal --> TriEmissive["Emissive:<br/>IF emissive_texture_index >= 0:<br/>  emissive = material.emissive *<br/>    textureSampleLevel(...).rgb"]
+
+        TriEmissive --> TriHit["HIT:<br/>distance, position,<br/>normal, base_color,<br/>emissive, reflectivity,<br/>material_id"]
+    end
+
+    style BoxMiss fill:#ffcccc
+    style TriMiss fill:#ffcccc
+    style BoxHit fill:#ccffcc
+    style TriHit fill:#ccffcc
+
+---
+title: Memory Layout and Data Structures
+---
+
+graph TD
+    subgraph CPUSide["CPU Side (Rust)"]
+        CameraStruct["Camera<br/>• position: Vec3<br/>• yaw: f32<br/>• pitch: f32<br/><br/>Methods:<br/>• forward()<br/>• right()<br/>• up()"]
+
+        GridStruct["Grid<br/>• bounds_min/max: Vec3<br/>• num_levels: 4<br/>• finest_cell_size: 16.0<br/><br/>• coarse_levels[0..3]:<br/>  - cell_size: f32<br/>  - grid_size: [usize; 3]<br/>  - counts: Vec&lt;u8&gt;<br/><br/>• fine_level:<br/>  - cells: Vec&lt;Vec&lt;u32&gt;&gt;<br/>  - max capacity: 8192/cell"]
+
+        BoxStruct["Box<br/>• center0/center1: Vec3<br/>• half_size: Vec3<br/>• color: Vec3<br/>• reflectivity: f32"]
+
+        TriStruct["Triangle<br/>• v0, v1, v2: Vec3<br/>• uv0, uv1, uv2: Vec2<br/>• material_id: u32"]
+
+        MatStruct["Material<br/>• base_color: [f32; 4]<br/>• emissive: [f32; 3]<br/>• texture_index: i32<br/>• metallic: f32<br/>• roughness: f32<br/>• normal_texture_index: i32<br/>• emissive_texture_index: i32<br/>• alpha_mode: u32<br/>• alpha_cutoff: f32"]
+    end
+
+    subgraph Transfer["GPU Transfer (bytemuck)"]
+        CameraStruct --> CamUniform["CameraUniform (96B)<br/>• position: [f32; 3] + pad<br/>• forward: [f32; 3] + pad<br/>• right: [f32; 3] + pad<br/>• up: [f32; 3] + pad<br/>• time: f32<br/>• lod_factor: f32<br/>• min_pixel_size: f32<br/>• show_grid: f32"]
+
+        GridStruct --> GridMeta["GridMetadata (96B)<br/>• bounds_min: vec3<br/>• bounds_max: vec3<br/>• num_levels: u32<br/>• finest_cell_size: f32<br/>• grid_sizes: array&lt;vec4, 4&gt;"]
+
+        GridStruct --> CoarseBuffer["Coarse Grid Buffer<br/>Flat u8 array:<br/>level0_counts +<br/>level1_counts +<br/>level2_counts"]
+
+        GridStruct --> FineBuffer["Fine Grid Buffer<br/>Array of FineCellData:<br/>struct FineCellData {<br/>  object_indices: array&lt;u32, 8192&gt;<br/>  count: u32<br/>  _pad: array&lt;u32, 3&gt;<br/>}<br/><br/>Size: 32,784 bytes/cell!"]
+
+        BoxStruct --> BoxBuffer["Box Buffer<br/>128 bytes/box"]
+        TriStruct --> TriBuffer["Triangle Buffer<br/>80 bytes/triangle"]
+        MatStruct --> MatBuffer["Material Buffer<br/>64 bytes/material"]
+    end
+
+    subgraph GPUSide["GPU Side (WGSL Bindings)"]
+        CamUniform --> Binding0["@group(0) @binding(0)<br/>var&lt;uniform&gt; camera"]
+        GridMeta --> Binding1["@group(0) @binding(1)<br/>var&lt;uniform&gt; grid_meta"]
+        CoarseBuffer --> Binding2["@group(0) @binding(2)<br/>var&lt;storage, read&gt; coarse_grid"]
+        FineBuffer --> Binding3["@group(0) @binding(3)<br/>var&lt;storage, read&gt; fine_cells"]
+        BoxBuffer --> Binding4["@group(0) @binding(4)<br/>var&lt;storage, read&gt; boxes"]
+        TriBuffer --> Binding5["@group(0) @binding(5)<br/>var&lt;storage, read&gt; triangles"]
+        MatBuffer --> Binding6["@group(0) @binding(6)<br/>var&lt;storage, read&gt; materials"]
+
+        SceneConfig["SceneConfig (16B)<br/>• num_boxes: u32<br/>• num_triangles: u32"] --> Binding7["@group(0) @binding(7)<br/>var&lt;uniform&gt; scene_config"]
+
+        Output["Output Texture<br/>Rgba8Unorm<br/>width × height"] --> Binding8["@group(0) @binding(8)<br/>var output_texture:<br/>  texture_storage_2d&lt;<br/>    rgba8unorm, write&gt;"]
+
+        TexArray["Texture Array<br/>2D array with all<br/>glTF textures"] --> Binding11["@group(0) @binding(11)<br/>var texture_array:<br/>  texture_2d_array&lt;f32&gt;"]
+    end
+
+    style FineBuffer fill:#ffcccc,stroke:#ff0000,stroke-width:2px
+    style CPUSide fill:#e1f5ff
+    style GPUSide fill:#fff4e1
+
+---
+title: Performance Analysis
+---
+
+graph TD
+    subgraph Bottlenecks["⚠️ Performance Bottlenecks"]
+        B1["Shadow Rays: O(N+M) brute force<br/>• Test ALL boxes<br/>• Test ALL triangles<br/>• Per emissive light<br/>• Per shaded pixel<br/><br/>Impact: CRITICAL"]
+
+        B2["Fine Grid Memory: 32KB/cell<br/>• Fixed array: 8192 objects<br/>• 64³ grid = 8.6 GB<br/>• Mostly empty<br/><br/>Impact: HIGH"]
+
+        B3["Scattered Memory Access<br/>• DDA path varies per pixel<br/>• Poor warp coherency<br/>• Random object_indices reads<br/><br/>Impact: MEDIUM"]
+
+        B4["Texture Sampling in Intersection<br/>• Alpha-tested triangles<br/>• Rejected hits pay sampling cost<br/>• Inside tight DDA loop<br/><br/>Impact: MEDIUM"]
+
+        B5["Moving Boxes Bypass Grid<br/>• Every ray tests all moving boxes<br/>• Hardcoded: last 3 boxes<br/>• No spatial culling<br/><br/>Impact: LOW (only 3 boxes)"]
+    end
+
+    subgraph Optimizations["✅ Optimizations In Use"]
+        O1["Early Ray Termination<br/>If hit closer than next cell boundary"]
+
+        O2["LOD Culling<br/>Objects < 2 pixels on screen<br/>Distance > 200 units"]
+
+        O3["Russian Roulette<br/>Stop bounces at reflectivity < 0.01"]
+
+        O4["Shadow Ray Early-Outs<br/>Facing checks before occlusion test"]
+
+        O5["Safe Inverse Direction<br/>Epsilon protection prevents NaN"]
+
+        O6["Workgroup Size: 8×8<br/>Matches typical GPU architecture"]
+    end
+
+    subgraph Complexity["Complexity Analysis"]
+        C1["Best Case: O(1)<br/>• Ray misses grid bounds<br/>• Returns sky color"]
+
+        C2["Average Case: O(C × K)<br/>• C = cells traversed (~10-30)<br/>• K = objects per cell (~5-50)"]
+
+        C3["Worst Case:<br/>O(200 × 8192 + E × N × 8)<br/>• 200 cells (max)<br/>• 8192 objects/cell (capacity)<br/>• E emissive triangles<br/>• N total geometry<br/>• 8 bounces<br/><br/>= ~1.6M + emissive_cost"]
+    end
+
+    B1 --> Impact1["Dominates cost in<br/>complex glTF scenes"]
+    B2 --> Impact2["Limits scene size<br/>GPU memory bound"]
+
+    O1 --> Benefit1["Reduces cells traversed<br/>by ~30-50%"]
+    O2 --> Benefit2["Culls distant objects<br/>reduces grid density"]
+
+    style B1 fill:#ff6b6b
+    style B2 fill:#ffa07a
+    style B3 fill:#ffcc99
+    style B4 fill:#ffcc99
+    style B5 fill:#ffffcc
+    style O1 fill:#90ee90
+    style C3 fill:#ffcccc

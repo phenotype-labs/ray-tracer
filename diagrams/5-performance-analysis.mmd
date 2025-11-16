@@ -1,0 +1,51 @@
+%% Performance Analysis
+%% Bottlenecks, optimizations, and complexity breakdown
+
+graph TD
+    subgraph Bottlenecks["⚠️ Performance Bottlenecks"]
+        B1["Shadow Rays: O(N+M) brute force<br/>• Test ALL boxes<br/>• Test ALL triangles<br/>• Per emissive light<br/>• Per shaded pixel<br/><br/>Impact: CRITICAL"]
+
+        B2["Fine Grid Memory: 32KB/cell<br/>• Fixed array: 8192 objects<br/>• 64³ grid = 8.6 GB<br/>• Mostly empty<br/><br/>Impact: HIGH"]
+
+        B3["Scattered Memory Access<br/>• DDA path varies per pixel<br/>• Poor warp coherency<br/>• Random object_indices reads<br/><br/>Impact: MEDIUM"]
+
+        B4["Texture Sampling in Intersection<br/>• Alpha-tested triangles<br/>• Rejected hits pay sampling cost<br/>• Inside tight DDA loop<br/><br/>Impact: MEDIUM"]
+
+        B5["Moving Boxes Bypass Grid<br/>• Every ray tests all moving boxes<br/>• Hardcoded: last 3 boxes<br/>• No spatial culling<br/><br/>Impact: LOW (only 3 boxes)"]
+    end
+
+    subgraph Optimizations["✅ Optimizations In Use"]
+        O1["Early Ray Termination<br/>If hit closer than next cell boundary"]
+
+        O2["LOD Culling<br/>Objects < 2 pixels on screen<br/>Distance > 200 units"]
+
+        O3["Russian Roulette<br/>Stop bounces at reflectivity < 0.01"]
+
+        O4["Shadow Ray Early-Outs<br/>Facing checks before occlusion test"]
+
+        O5["Safe Inverse Direction<br/>Epsilon protection prevents NaN"]
+
+        O6["Workgroup Size: 8×8<br/>Matches typical GPU architecture"]
+    end
+
+    subgraph Complexity["Complexity Analysis"]
+        C1["Best Case: O(1)<br/>• Ray misses grid bounds<br/>• Returns sky color"]
+
+        C2["Average Case: O(C × K)<br/>• C = cells traversed (~10-30)<br/>• K = objects per cell (~5-50)"]
+
+        C3["Worst Case:<br/>O(200 × 8192 + E × N × 8)<br/>• 200 cells (max)<br/>• 8192 objects/cell (capacity)<br/>• E emissive triangles<br/>• N total geometry<br/>• 8 bounces<br/><br/>= ~1.6M + emissive_cost"]
+    end
+
+    B1 --> Impact1["Dominates cost in<br/>complex glTF scenes"]
+    B2 --> Impact2["Limits scene size<br/>GPU memory bound"]
+
+    O1 --> Benefit1["Reduces cells traversed<br/>by ~30-50%"]
+    O2 --> Benefit2["Culls distant objects<br/>reduces grid density"]
+
+    style B1 fill:#ff6b6b
+    style B2 fill:#ffa07a
+    style B3 fill:#ffcc99
+    style B4 fill:#ffcc99
+    style B5 fill:#ffffcc
+    style O1 fill:#90ee90
+    style C3 fill:#ffcccc

@@ -47,7 +47,10 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
         let texture_index = if let Some(info) = pbr.base_color_texture() {
             let tex_index = info.texture().index();
             println!("  Material {} uses texture {}", mat_idx, tex_index);
-            tex_index as i32
+            tex_index.try_into().unwrap_or_else(|_| {
+                eprintln!("Warning: Texture index {} too large, using -1", tex_index);
+                -1
+            })
         } else {
             -1
         };
@@ -55,7 +58,10 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
         let normal_texture_index = if let Some(info) = material.normal_texture() {
             let tex_index = info.texture().index();
             println!("  Material {} uses normal map {}", mat_idx, tex_index);
-            tex_index as i32
+            tex_index.try_into().unwrap_or_else(|_| {
+                eprintln!("Warning: Normal texture index {} too large, using -1", tex_index);
+                -1
+            })
         } else {
             -1
         };
@@ -64,7 +70,10 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
         let emissive_texture_index = if let Some(info) = material.emissive_texture() {
             let tex_index = info.texture().index();
             println!("  Material {} uses emissive texture {}", mat_idx, tex_index);
-            tex_index as i32
+            tex_index.try_into().unwrap_or_else(|_| {
+                eprintln!("Warning: Emissive texture index {} too large, using -1", tex_index);
+                -1
+            })
         } else {
             -1
         };
@@ -144,12 +153,14 @@ pub fn load_gltf_triangles(path: impl AsRef<Path>) -> Result<GltfScene> {
         });
     }
 
+    let material_count = materials.len();
+
     // Process each scene
     for scene in gltf.scenes() {
         println!("Processing scene: {:?}", scene.name());
 
         for node in scene.nodes() {
-            process_node_triangles(&node, &buffers, &glam::Mat4::IDENTITY, &mut all_triangles)?;
+            process_node_triangles(&node, &buffers, &glam::Mat4::IDENTITY, &mut all_triangles, material_count)?;
         }
     }
 
@@ -170,16 +181,17 @@ fn process_node_triangles(
     buffers: &[gltf::buffer::Data],
     parent_transform: &glam::Mat4,
     triangles: &mut Vec<TriangleData>,
+    material_count: usize,
 ) -> Result<()> {
     let local_transform = glam::Mat4::from_cols_array_2d(&node.transform().matrix());
     let global_transform = *parent_transform * local_transform;
 
     if let Some(mesh) = node.mesh() {
-        process_mesh_triangles(&mesh, buffers, &global_transform, triangles)?;
+        process_mesh_triangles(&mesh, buffers, &global_transform, triangles, material_count)?;
     }
 
     for child in node.children() {
-        process_node_triangles(&child, buffers, &global_transform, triangles)?;
+        process_node_triangles(&child, buffers, &global_transform, triangles, material_count)?;
     }
 
     Ok(())
@@ -191,6 +203,7 @@ fn process_mesh_triangles(
     buffers: &[gltf::buffer::Data],
     transform: &glam::Mat4,
     triangles: &mut Vec<TriangleData>,
+    material_count: usize,
 ) -> Result<()> {
     println!("  Processing mesh: {:?}", mesh.name());
 
@@ -217,8 +230,11 @@ fn process_mesh_triangles(
             vec![[0.0, 0.0]; vertices.len()]
         };
 
-        // Get material index
-        let material_id = primitive.material().index().unwrap_or(0) as u32;
+        // Get material index with bounds validation
+        let material_id = primitive.material()
+            .index()
+            .filter(|&i| i < material_count)  // Validate against loaded materials
+            .unwrap_or(0) as u32;
 
         // Extract indices and create triangles
         if let Some(indices) = reader.read_indices() {

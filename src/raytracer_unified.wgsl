@@ -4,6 +4,8 @@
 const GRID_LEVELS: u32 = 4u;
 const MAX_OBJECTS_PER_CELL: u32 = 8192u;
 const EPSILON: f32 = 0.00001;
+const DEFAULT_FOV: f32 = 0.785398;  // π/4 = 45 degrees
+const LIGHT_DIRECTION: vec3<f32> = vec3<f32>(0.5, -1.0, 0.3);
 
 struct Camera {
     position: vec3<f32>,
@@ -157,8 +159,17 @@ fn should_cull_lod(object_center: vec3<f32>, object_size: vec3<f32>) -> bool {
 
 // Ray-AABB intersection
 fn intersect_aabb(ray: Ray, box_min: vec3<f32>, box_max: vec3<f32>) -> f32 {
-    let t_min = (box_min - ray.origin) / ray.direction;
-    let t_max = (box_max - ray.origin) / ray.direction;
+    const EPSILON: f32 = 1e-8;
+
+    // Precompute safe inverse direction to avoid division by zero for axis-aligned rays
+    let inv_dir = vec3<f32>(
+        select(1.0 / ray.direction.x, 1.0 / (EPSILON * sign(ray.direction.x)), abs(ray.direction.x) < EPSILON),
+        select(1.0 / ray.direction.y, 1.0 / (EPSILON * sign(ray.direction.y)), abs(ray.direction.y) < EPSILON),
+        select(1.0 / ray.direction.z, 1.0 / (EPSILON * sign(ray.direction.z)), abs(ray.direction.z) < EPSILON)
+    );
+
+    let t_min = (box_min - ray.origin) * inv_dir;
+    let t_max = (box_max - ray.origin) * inv_dir;
 
     let t1 = min(t_min, t_max);
     let t2 = max(t_min, t_max);
@@ -372,10 +383,12 @@ fn intersect_triangle(ray: Ray, tri: Triangle, tri_idx: u32) -> HitInfo {
 // Convert world position to grid cell coordinates
 fn world_to_cell(pos: vec3<f32>, cell_size: f32) -> vec3<u32> {
     let rel_pos = pos - grid_meta.bounds_min;
+    // Use multiplication by inverse to avoid division by zero
+    let inv_cell_size = 1.0 / max(cell_size, 1e-8);
     return vec3<u32>(
-        u32(max(0.0, floor(rel_pos.x / cell_size))),
-        u32(max(0.0, floor(rel_pos.y / cell_size))),
-        u32(max(0.0, floor(rel_pos.z / cell_size)))
+        u32(max(0.0, floor(rel_pos.x * inv_cell_size))),
+        u32(max(0.0, floor(rel_pos.y * inv_cell_size))),
+        u32(max(0.0, floor(rel_pos.z * inv_cell_size)))
     );
 }
 
@@ -494,8 +507,16 @@ fn trace_ray(ray: Ray) -> TraceResult {
         select(0.0, cell_size, step.z > 0)
     );
 
-    let t_delta = abs(cell_size / ray.direction);
-    var t_max = t_offset + (next_boundary - ray_pos) / ray.direction;
+    const EPSILON: f32 = 1e-8;
+    // Safe inverse direction for grid traversal
+    let safe_inv_dir = vec3<f32>(
+        select(1.0 / ray.direction.x, 1.0 / (EPSILON * sign(ray.direction.x)), abs(ray.direction.x) < EPSILON),
+        select(1.0 / ray.direction.y, 1.0 / (EPSILON * sign(ray.direction.y)), abs(ray.direction.y) < EPSILON),
+        select(1.0 / ray.direction.z, 1.0 / (EPSILON * sign(ray.direction.z)), abs(ray.direction.z) < EPSILON)
+    );
+
+    let t_delta = abs(cell_size * safe_inv_dir);
+    var t_max = t_offset + (next_boundary - ray_pos) * safe_inv_dir;
     t_max = max(t_max, vec3<f32>(t_offset + 0.00001));
 
     // DDA traversal
@@ -578,7 +599,7 @@ fn trace_ray(ray: Ray) -> TraceResult {
     }
 
     // Lighting: ambient + directional + emissive surfaces
-    let light_dir = normalize(vec3<f32>(0.5, -1.0, 0.3));
+    let light_dir = normalize(LIGHT_DIRECTION);
     let diffuse = max(dot(closest_hit.normal, -light_dir), 0.0);
     let ambient = 0.3;
 
@@ -718,7 +739,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
     // Generate ray from camera
     let aspect_ratio = f32(screen_size.x) / f32(screen_size.y);
-    let fov_scale = tan(0.785398); // 45 degrees FOV
+    let fov_scale = tan(DEFAULT_FOV);
 
     let ray_dir = normalize(
         camera.forward +

@@ -1,0 +1,48 @@
+%% Intersection Algorithms Detail
+%% Box (AABB Slab) and Triangle (Möller-Trumbore) methods
+
+flowchart LR
+    subgraph BoxIntersect["INTERSECT_BOX (AABB Slab Method)"]
+        BoxInput["Input:<br/>ray, box.center,<br/>box.half_size, time"] --> BoxInterp["Interpolate position:<br/>t_lerp = (sin(time*2)+1)*0.5<br/>center = mix(center0,<br/>            center1,<br/>            t_lerp)"]
+
+        BoxInterp --> BoxBounds["box_min = center - half_size<br/>box_max = center + half_size"]
+
+        BoxBounds --> BoxSlab["Slab test:<br/>inv_dir = 1.0 / ray.direction<br/>t_min = (box_min - ray.origin) * inv_dir<br/>t_max = (box_max - ray.origin) * inv_dir<br/><br/>t1 = min(t_min, t_max)<br/>t2 = max(t_min, t_max)<br/><br/>t_near = max(t1.x, t1.y, t1.z)<br/>t_far = min(t2.x, t2.y, t2.z)"]
+
+        BoxSlab --> BoxCheck{"t_near > t_far<br/>OR t_far < 0?"}
+
+        BoxCheck -->|YES| BoxMiss["MISS"]
+        BoxCheck -->|NO| BoxNormal["Calculate normal:<br/>p = hit_pos - center<br/>d = abs(p) - half_size<br/><br/>normal = axis with<br/>         largest d component"]
+
+        BoxNormal --> BoxHit["HIT:<br/>distance, position,<br/>normal, color,<br/>reflectivity"]
+    end
+
+    subgraph TriIntersect["INTERSECT_TRIANGLE (Möller-Trumbore)"]
+        TriInput["Input:<br/>ray, triangle<br/>(v0, v1, v2),<br/>(uv0, uv1, uv2),<br/>material"] --> TriEdges["edge1 = v1 - v0<br/>edge2 = v2 - v0"]
+
+        TriEdges --> TriBary["h = cross(ray.dir, edge2)<br/>a = dot(edge1, h)<br/><br/>IF |a| < ε: MISS (parallel)<br/><br/>f = 1.0 / a<br/>s = ray.origin - v0<br/>u = f * dot(s, h)<br/><br/>IF u < 0 OR u > 1: MISS"]
+
+        TriBary --> TriBary2["q = cross(s, edge1)<br/>v = f * dot(ray.dir, q)<br/><br/>IF v < 0 OR u+v > 1: MISS<br/><br/>t = f * dot(edge2, q)<br/><br/>IF t < ε: MISS"]
+
+        TriBary2 --> TriUV["w = 1.0 - u - v<br/>uv = uv0*w + uv1*u + uv2*v"]
+
+        TriUV --> TriTex["base_color =<br/>  textureSampleLevel(<br/>    texture_array,<br/>    sampler,<br/>    uv,<br/>    material.texture_index,<br/>    lod=0.0)"]
+
+        TriTex --> TriAlpha{"material.alpha_mode<br/>== MASK?"}
+
+        TriAlpha -->|YES| TriAlphaTest{"base_color.a <<br/>alpha_cutoff?"}
+        TriAlphaTest -->|YES| TriMiss["MISS"]
+        TriAlphaTest -->|NO| TriNormal
+        TriAlpha -->|NO| TriNormal
+
+        TriNormal["Normal mapping:<br/>IF normal_texture_index >= 0:<br/>  tangent_normal =<br/>    textureSampleLevel(...)*2-1<br/>  normal = TBN * tangent_normal<br/>ELSE:<br/>  normal = normalize(<br/>           cross(edge1, edge2))"]
+
+        TriNormal --> TriEmissive["Emissive:<br/>IF emissive_texture_index >= 0:<br/>  emissive = material.emissive *<br/>    textureSampleLevel(...).rgb"]
+
+        TriEmissive --> TriHit["HIT:<br/>distance, position,<br/>normal, base_color,<br/>emissive, reflectivity,<br/>material_id"]
+    end
+
+    style BoxMiss fill:#ffcccc
+    style TriMiss fill:#ffcccc
+    style BoxHit fill:#ccffcc
+    style TriHit fill:#ccffcc

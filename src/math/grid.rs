@@ -1,11 +1,16 @@
 use glam::Vec3;
 
 pub fn world_to_cell(pos: Vec3, bounds_min: Vec3, cell_size: f32) -> (i32, i32, i32) {
+    debug_assert!(cell_size > 0.0, "cell_size must be positive");
+    debug_assert!(pos.is_finite() && bounds_min.is_finite(), "inputs must be finite");
+
     let rel_pos = pos - bounds_min;
+    // Use multiplication by inverse to avoid division issues
+    let inv_cell_size = 1.0 / cell_size;
     (
-        (rel_pos.x / cell_size).floor() as i32,
-        (rel_pos.y / cell_size).floor() as i32,
-        (rel_pos.z / cell_size).floor() as i32,
+        (rel_pos.x * inv_cell_size).floor() as i32,
+        (rel_pos.y * inv_cell_size).floor() as i32,
+        (rel_pos.z * inv_cell_size).floor() as i32,
     )
 }
 

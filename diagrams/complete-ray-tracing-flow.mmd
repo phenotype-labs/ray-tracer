@@ -1,0 +1,114 @@
+%% Complete Ray Tracer Architecture - WebGPU Rust Implementation
+%% All-in-one comprehensive flow diagram
+
+graph TB
+    Start["🎯 RAY TRACER PIPELINE START"] --> CPUPhase
+
+    subgraph CPUPhase["━━━ CPU SIDE (Rust) ━━━"]
+        Camera["📷 Camera (camera.rs)<br/>━━━━━━━━━━━━━━━━<br/>• Position: Vec3<br/>• Yaw/Pitch angles<br/>• Calculate basis vectors:<br/>  - forward() from angles<br/>  - right() = forward × Y_UP<br/>  - up() = fixed Y_UP"]
+
+        GridBuilder["🔲 Grid Builder (grid.rs)<br/>━━━━━━━━━━━━━━━━<br/>• 4 hierarchical levels<br/>• Cell sizes: 128→64→32→16<br/>• Coarse: u8 counts (3 levels)<br/>• Fine: Vec&lt;Vec&lt;u32&gt;&gt; indices<br/>• MAX: 8192 objects/cell"]
+
+        GLTFLoader["📦 glTF Loader<br/>━━━━━━━━━━━━━━━━<br/>• Parse meshes/materials<br/>• Extract geometry (v0,v1,v2,UVs)<br/>• Load PBR textures<br/>• Build triangle buffer<br/>• Extract emissive materials"]
+
+        Camera --> BufferPrep
+        GridBuilder --> BufferPrep
+        GLTFLoader --> BufferPrep
+    end
+
+    subgraph BufferPrep["━━━ GPU BUFFER PREPARATION ━━━"]
+        PerFrame["⏱️ Per-Frame Uploads (96B)<br/>━━━━━━━━━━━━━━━━<br/>CameraUniform:<br/>• position, forward, right, up<br/>• time (animation)<br/>• lod_factor = h/(2*tan(FOV/2))<br/>• min_pixel_size = 2.0"]
+
+        StaticBuffers["💾 Static Buffers (Once)<br/>━━━━━━━━━━━━━━━━<br/>• Grid Metadata (96B)<br/>• Coarse Grid (u8 array)<br/>• Fine Grid (32KB/cell ⚠️)<br/>• Boxes (128B each)<br/>• Triangles (80B each)<br/>• Materials (64B each)<br/>• Texture Array (2D array)"]
+    end
+
+    BufferPrep --> GPUDispatch["🚀 COMPUTE DISPATCH<br/>━━━━━━━━━━━━━━━━<br/>Workgroups: (width/8, height/8, 1)<br/>8×8 threads per workgroup<br/>1 thread = 1 pixel"]
+
+    GPUDispatch --> GPUPhase
+
+    subgraph GPUPhase["━━━ GPU COMPUTE SHADER (WGSL) ━━━"]
+
+        RayGen["Stage 1️⃣: RAY GENERATION<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>pixel_xy → UV [0,1] → NDC [-1,1]<br/><br/>ray.direction = normalize(<br/>  camera.forward +<br/>  camera.right * ndc.x * aspect * fov +<br/>  camera.up * -ndc.y * fov<br/>)<br/>ray.origin = camera.position"]
+
+        BounceLoop["🔁 BOUNCE LOOP (MAX 8)<br/>━━━━━━━━━━━━━━━━"]
+
+        RayGen --> BounceLoop
+
+        BounceLoop --> MovingBox["2A: Moving Box Pre-Pass<br/>━━━━━━━━━━━━━━━━━━━<br/>⚠️ BYPASSES GRID<br/>• Brute force: last 3 boxes<br/>• Interpolate position:<br/>  t = (sin(time*2)+1)*0.5<br/>  center = mix(c0, c1, t)"]
+
+        MovingBox --> GridCheck["2B: Grid Bounds Check<br/>━━━━━━━━━━━━━━━━━━━<br/>IF ray.origin inside grid:<br/>  entry = ray.origin<br/>ELSE:<br/>  t = intersect_aabb(grid_bounds)<br/>  IF t < 0: return SKY ☁️<br/>  entry = ray(t + 0.001)"]
+
+        GridCheck --> DDASetup["2C: DDA SETUP<br/>━━━━━━━━━━━━━━━━━━━<br/>current_cell = world_to_grid(entry)<br/><br/>step = sign(ray.direction)<br/>  →  ±1 per axis<br/><br/>t_delta = |cell_size / ray.dir|<br/>  → CONSTANT (never changes)<br/><br/>t_max = (next_boundary - pos) / ray.dir<br/>  → Updated each step"]
+
+        DDASetup --> DDALoop["2D: DDA LOOP (i=0..200)<br/>━━━━━━━━━━━━━━━━━━━"]
+
+        DDALoop --> GetCell["📍 Get Fine Cell<br/>━━━━━━━━━━━━━━<br/>idx = x + y*nx + z*nx*ny<br/>cell = fine_cells[idx]<br/>count = cell.count (≤8192)"]
+
+        GetCell --> TestCell["🔍 Test All Objects in Cell<br/>━━━━━━━━━━━━━━━━━━━━━━<br/>FOR j = 0 to count:<br/>  obj_id = cell.indices[j]<br/><br/>  IF obj_id < num_boxes:<br/>    ┌──────────────────────┐<br/>    │ INTERSECT_BOX        │<br/>    │ ━━━━━━━━━━━━━━━━━━━  │<br/>    │ • AABB slab method   │<br/>    │ • inv_dir = 1/ray.dir│<br/>    │ • t_min/t_max test   │<br/>    │ • Calculate normal   │<br/>    └──────────────────────┘<br/>  ELSE:<br/>    ┌──────────────────────┐<br/>    │ INTERSECT_TRIANGLE   │<br/>    │ ━━━━━━━━━━━━━━━━━━━  │<br/>    │ • Möller-Trumbore    │<br/>    │ • Barycentric coords │<br/>    │ • Texture sampling   │<br/>    │ • Alpha masking      │<br/>    │ • Normal mapping     │<br/>    └──────────────────────┘<br/><br/>Keep closest hit"]
+
+        TestCell --> EarlyExit{"⚡ Early Exit?<br/>━━━━━━━━━━━<br/>hit.distance <<br/>min(t_max)?"}
+
+        EarlyExit -->|YES| Shading
+        EarlyExit -->|NO| StepCell
+
+        StepCell["➡️ Step to Next Cell<br/>━━━━━━━━━━━━━━━━<br/>Choose axis with smallest t_max:<br/><br/>IF t_max.x is smallest:<br/>  cell.x += step.x<br/>  t_max.x += t_delta.x<br/>ELSE IF t_max.y is smallest:<br/>  cell.y += step.y<br/>  t_max.y += t_delta.y<br/>ELSE:<br/>  cell.z += step.z<br/>  t_max.z += t_delta.z"]
+
+        StepCell --> BoundsCheck{"Cell in<br/>bounds?"}
+
+        BoundsCheck -->|YES| LoopCheck{"i < 200?"}
+        BoundsCheck -->|NO| Shading
+
+        LoopCheck -->|YES| DDALoop
+        LoopCheck -->|NO| Shading
+
+        Shading["2E: SHADING 🎨<br/>━━━━━━━━━━━━━━━━"]
+
+        Shading --> Lighting
+
+        subgraph Lighting["LIGHTING CALCULATION"]
+            Ambient["💡 Ambient<br/>━━━━━━━━<br/>constant 0.3"]
+
+            Diffuse["☀️ Directional<br/>━━━━━━━━━━━━<br/>light_dir = (0.5,-1,0.3)<br/>diffuse = max(<br/>  dot(normal, -light_dir),<br/>  0.0<br/>) * 0.7"]
+
+            Emissive["✨ Emissive Area Lights<br/>━━━━━━━━━━━━━━━━━━━━<br/>FOR EACH triangle with emissive > 0:<br/>  light_pos = (v0+v1+v2)/3<br/>  to_light = light_pos - hit_pos<br/>  distance = length(to_light)<br/><br/>  IF dot(hit_normal, to_light) < 0: SKIP<br/>  IF dot(light_normal, -to_light) < 0: SKIP<br/><br/>  ┌─────────────────────────────┐<br/>  │ 🔴 SHADOW RAY (BOTTLENECK)  │<br/>  │ ━━━━━━━━━━━━━━━━━━━━━━━━━━  │<br/>  │ ⚠️ NO GRID ACCELERATION ⚠️  │<br/>  │                             │<br/>  │ • Test ALL boxes O(N)       │<br/>  │ • Test ALL triangles O(M)   │<br/>  │ • Per emissive light        │<br/>  │ • Per shaded pixel          │<br/>  │                             │<br/>  │ DOMINATES PERFORMANCE!      │<br/>  └─────────────────────────────┘<br/><br/>  IF occluded: SKIP<br/><br/>  area = 0.5 * |cross(e1,e2)|<br/>  attenuation = area*facing/(dist²+1)<br/>  light += emissive * n_dot_l * attenuation"]
+        end
+
+        Lighting --> Combine["🎨 Combine Color<br/>━━━━━━━━━━━━━━<br/>surface = base_color *<br/>  (ambient + diffuse + emissive_light)<br/><br/>accumulated += surface *<br/>  (1 - reflectivity) * multiplier"]
+
+        Combine --> ReflectCheck{"🪞 Reflect?<br/>━━━━━━━━<br/>reflectivity<br/>> 0.01?"}
+
+        ReflectCheck -->|NO| Output
+        ReflectCheck -->|YES| PrepBounce["Prepare Next Bounce<br/>━━━━━━━━━━━━━━━━━<br/>multiplier *= reflectivity<br/>ray.direction = reflect(<br/>  ray.direction, normal<br/>)<br/>ray.origin =<br/>  hit_pos + normal*0.001"]
+
+        PrepBounce --> BounceCheck{"Bounce < 8?"}
+        BounceCheck -->|YES| BounceLoop
+        BounceCheck -->|NO| Output
+
+        Output["📤 OUTPUT<br/>━━━━━━━━━━━━━━<br/>textureStore(<br/>  output_texture,<br/>  pixel_xy,<br/>  vec4(accumulated, 1.0)<br/>)"]
+    end
+
+    Output --> Display["🖥️ DISPLAY PIPELINE<br/>━━━━━━━━━━━━━━━━<br/>1. Render Pass<br/>2. Fullscreen Triangle<br/>3. Fragment Shader samples<br/>   output_texture<br/>4. Write to Swapchain"]
+
+    Display --> Done["✅ FRAME COMPLETE"]
+
+    subgraph Legend["━━━ KEY INFORMATION ━━━"]
+        Info1["📊 COMPLEXITY ANALYSIS<br/>━━━━━━━━━━━━━━━━━━━<br/>Best:    O(1) - ray misses grid<br/>Average: O(C × K) - C cells, K objs/cell<br/>Worst:   O(200×8192 + E×N×8)<br/>         = ~1.6M + emissive cost<br/><br/>C = cells traversed (10-30 typical)<br/>K = objects per cell (5-50 typical)<br/>E = emissive triangles<br/>N = total geometry"]
+
+        Info2["⚠️ BOTTLENECKS<br/>━━━━━━━━━━━━━━━━━━━<br/>🔴 CRITICAL: Shadow ray O(N+M)<br/>🟠 HIGH: Fine grid 32KB/cell<br/>🟡 MEDIUM: Scattered memory access<br/>🟡 MEDIUM: Texture in intersection<br/>🟢 LOW: Moving boxes bypass grid"]
+
+        Info3["✅ OPTIMIZATIONS<br/>━━━━━━━━━━━━━━━━━━━<br/>• Early ray termination<br/>• LOD culling (< 2px, > 200 units)<br/>• Russian roulette (reflect < 0.01)<br/>• Shadow ray facing checks<br/>• Safe inverse (epsilon protection)<br/>• Workgroup size 8×8"]
+
+        Info4["💾 MEMORY LAYOUT<br/>━━━━━━━━━━━━━━━━━━━<br/>Binding 0: Camera (uniform, 96B)<br/>Binding 1: Grid Meta (uniform, 96B)<br/>Binding 2: Coarse Grid (storage, u8[])<br/>Binding 3: Fine Grid (storage, 32KB/cell)<br/>Binding 4: Boxes (storage, 128B each)<br/>Binding 5: Triangles (storage, 80B each)<br/>Binding 6: Materials (storage, 64B each)<br/>Binding 7: Scene Config (uniform, 16B)<br/>Binding 8: Output Texture (storage, RGBA8)<br/>Binding 11: Texture Array (2D array)<br/>Binding 12: Sampler (linear filter)"]
+    end
+
+    style Start fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff
+    style Done fill:#4CAF50,stroke:#2E7D32,stroke-width:3px,color:#fff
+    style CPUPhase fill:#E3F2FD,stroke:#1976D2,stroke-width:2px
+    style GPUPhase fill:#FFF3E0,stroke:#F57C00,stroke-width:2px
+    style BufferPrep fill:#F5F5F5,stroke:#616161,stroke-width:2px
+    style Lighting fill:#FCE4EC,stroke:#C2185B,stroke-width:2px
+    style Legend fill:#E8F5E9,stroke:#388E3C,stroke-width:2px
+    style Emissive fill:#FFCDD2,stroke:#D32F2F,stroke-width:3px
+    style DDALoop fill:#C8E6C9,stroke:#388E3C,stroke-width:2px
+    style BounceLoop fill:#E1BEE7,stroke:#7B1FA2,stroke-width:2px
+    style StaticBuffers fill:#FFCCBC,stroke:#E64A19,stroke-width:2px

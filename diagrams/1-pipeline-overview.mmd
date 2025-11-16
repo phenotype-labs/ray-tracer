@@ -1,0 +1,90 @@
+%% Ray Tracer Pipeline Overview
+%% Complete flow from CPU to GPU to Display
+
+graph TB
+    subgraph CPU["CPU Side (Rust)"]
+        Camera["Camera (camera.rs)<br/>- Position: Vec3<br/>- Yaw/Pitch<br/>- Calculate basis vectors"]
+        GridBuilder["Grid Builder (grid.rs)<br/>- 4 hierarchical levels<br/>- Cell sizes: 128→64→32→16<br/>- Insert objects into cells"]
+        GLTFLoader["glTF Loader<br/>- Parse meshes/materials<br/>- Extract textures<br/>- Build triangle buffer"]
+
+        Camera --> BufferUpload
+        GridBuilder --> BufferUpload
+        GLTFLoader --> BufferUpload
+    end
+
+    subgraph BufferUpload["GPU Buffer Upload"]
+        PerFrame["Per-Frame Uniforms<br/>• Camera (96B)<br/>• Scene Config (16B)<br/>• Debug Params (16B)"]
+        Static["Static Buffers (Once)<br/>• Grid Metadata (96B)<br/>• Coarse Grid (u8 counts)<br/>• Fine Grid (32KB/cell!)<br/>• Boxes/Triangles (geometry)<br/>• Materials (PBR data)<br/>• Texture Array (2D array)"]
+    end
+
+    BufferUpload --> Dispatch["Compute Dispatch<br/>workgroups: (width/8, height/8, 1)<br/>8x8 threads per workgroup<br/>1 thread = 1 pixel"]
+
+    subgraph GPU["GPU Side (WGSL Compute Shader)"]
+        Dispatch --> RayGen
+
+        RayGen["Stage 1: Ray Generation<br/>pixel → UV → NDC<br/>ray.dir = camera.forward +<br/>  camera.right * ndc.x * aspect * fov +<br/>  camera.up * -ndc.y * fov<br/>ray.origin = camera.position"]
+
+        RayGen --> BounceLoop["Bounce Loop (MAX 8)"]
+
+        BounceLoop --> MovingBoxPass["2A: Moving Box Pre-Pass<br/>Brute force test last 3 boxes<br/>Interpolate: mix(center0, center1, sin(time))"]
+
+        MovingBoxPass --> GridBounds["2B: Grid Bounds Check<br/>ray inside grid?<br/>NO → intersect_aabb(grid)<br/>  miss → SKY<br/>  hit → entry_point<br/>YES → entry_point = ray.origin"]
+
+        GridBounds --> DDASetup["2C: DDA Setup<br/>current_cell = world_to_grid(entry)<br/>step = sign(ray.direction)<br/>t_delta = abs(cell_size / ray.dir)<br/>t_max = (boundary - ray_pos) / ray.dir"]
+
+        DDASetup --> DDALoop["2D: DDA Traversal Loop (max 200)"]
+
+        DDALoop --> CellTest["Get Fine Cell Data<br/>idx = x + y*nx + z*nx*ny<br/>cell = fine_cells[idx]<br/>count ≤ 8192"]
+
+        CellTest --> ObjectLoop["For j = 0 to count"]
+
+        ObjectLoop --> ObjType{"obj_id < num_boxes?"}
+
+        ObjType -->|YES| IntersectBox["INTERSECT_BOX<br/>AABB slab method<br/>Calculate normal from hit face"]
+        ObjType -->|NO| IntersectTriangle["INTERSECT_TRIANGLE<br/>Möller-Trumbore<br/>Texture sampling<br/>Alpha masking<br/>Normal mapping"]
+
+        IntersectBox --> KeepClosest["Keep closest hit"]
+        IntersectTriangle --> KeepClosest
+
+        KeepClosest --> EarlyExit{"hit.distance <<br/>min(t_max)?"}
+        EarlyExit -->|YES| Shading
+        EarlyExit -->|NO| StepCell
+
+        StepCell["Step to Next Cell<br/>Choose axis with min(t_max)<br/>current_cell[axis] += step[axis]<br/>t_max[axis] += t_delta[axis]"]
+
+        StepCell --> BoundsCheck{"Cell in bounds?"}
+        BoundsCheck -->|YES| DDALoop
+        BoundsCheck -->|NO| Shading
+
+        Shading["2E: Shading"]
+
+        Shading --> Ambient["Ambient = 0.3"]
+        Shading --> Diffuse["Diffuse<br/>max(dot(N, -light_dir), 0) * 0.7<br/>light_dir = (0.5, -1.0, 0.3)"]
+        Shading --> Emissive["Emissive Area Lights<br/>For each triangle with emissive > 0"]
+
+        Emissive --> ShadowRay["SHADOW RAY (BRUTE FORCE!)<br/>Test ALL boxes O(N)<br/>Test ALL triangles O(M)<br/>No grid acceleration ⚠️"]
+
+        ShadowRay --> AreaLight["area = 0.5 * |cross(edge1, edge2)|<br/>attenuation = area * facing / (dist² + 1)<br/>light += emissive * n_dot_l * attenuation"]
+
+        Ambient --> FinalColor["surface_color = base_color *<br/>  (ambient + diffuse + light)<br/>accumulated += surface_color *<br/>  (1 - reflectivity) * multiplier"]
+        Diffuse --> FinalColor
+        AreaLight --> FinalColor
+
+        FinalColor --> ReflectCheck{"reflectivity <<br/>0.01?"}
+
+        ReflectCheck -->|YES| Output
+        ReflectCheck -->|NO| NextBounce["multiplier *= reflectivity<br/>ray.dir = reflect(ray.dir, normal)<br/>ray.origin = hit_pos + normal * 0.001"]
+
+        NextBounce --> BounceLoop
+
+        Output["textureStore(output_texture,<br/>  pixel_xy,<br/>  vec4(accumulated_color, 1.0))"]
+    end
+
+    Output --> Display["Display Pipeline<br/>Render Pass<br/>Fullscreen Triangle<br/>Fragment Shader<br/>↓<br/>Swapchain"]
+
+    style CPU fill:#e1f5ff
+    style GPU fill:#fff4e1
+    style BufferUpload fill:#f0f0f0
+    style ShadowRay fill:#ffcccc,stroke:#ff0000,stroke-width:3px
+    style DDALoop fill:#ccffcc
+    style BounceLoop fill:#ffccff

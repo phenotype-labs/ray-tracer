@@ -1,0 +1,49 @@
+%% Memory Layout and Data Structures
+%% CPU to GPU data transfer architecture
+
+graph TD
+    subgraph CPUSide["CPU Side (Rust)"]
+        CameraStruct["Camera<br/>• position: Vec3<br/>• yaw: f32<br/>• pitch: f32<br/><br/>Methods:<br/>• forward()<br/>• right()<br/>• up()"]
+
+        GridStruct["Grid<br/>• bounds_min/max: Vec3<br/>• num_levels: 4<br/>• finest_cell_size: 16.0<br/><br/>• coarse_levels[0..3]:<br/>  - cell_size: f32<br/>  - grid_size: [usize; 3]<br/>  - counts: Vec&lt;u8&gt;<br/><br/>• fine_level:<br/>  - cells: Vec&lt;Vec&lt;u32&gt;&gt;<br/>  - max capacity: 8192/cell"]
+
+        BoxStruct["Box<br/>• center0/center1: Vec3<br/>• half_size: Vec3<br/>• color: Vec3<br/>• reflectivity: f32"]
+
+        TriStruct["Triangle<br/>• v0, v1, v2: Vec3<br/>• uv0, uv1, uv2: Vec2<br/>• material_id: u32"]
+
+        MatStruct["Material<br/>• base_color: [f32; 4]<br/>• emissive: [f32; 3]<br/>• texture_index: i32<br/>• metallic: f32<br/>• roughness: f32<br/>• normal_texture_index: i32<br/>• emissive_texture_index: i32<br/>• alpha_mode: u32<br/>• alpha_cutoff: f32"]
+    end
+
+    subgraph Transfer["GPU Transfer (bytemuck)"]
+        CameraStruct --> CamUniform["CameraUniform (96B)<br/>• position: [f32; 3] + pad<br/>• forward: [f32; 3] + pad<br/>• right: [f32; 3] + pad<br/>• up: [f32; 3] + pad<br/>• time: f32<br/>• lod_factor: f32<br/>• min_pixel_size: f32<br/>• show_grid: f32"]
+
+        GridStruct --> GridMeta["GridMetadata (96B)<br/>• bounds_min: vec3<br/>• bounds_max: vec3<br/>• num_levels: u32<br/>• finest_cell_size: f32<br/>• grid_sizes: array&lt;vec4, 4&gt;"]
+
+        GridStruct --> CoarseBuffer["Coarse Grid Buffer<br/>Flat u8 array:<br/>level0_counts +<br/>level1_counts +<br/>level2_counts"]
+
+        GridStruct --> FineBuffer["Fine Grid Buffer<br/>Array of FineCellData:<br/>struct FineCellData {<br/>  object_indices: array&lt;u32, 8192&gt;<br/>  count: u32<br/>  _pad: array&lt;u32, 3&gt;<br/>}<br/><br/>Size: 32,784 bytes/cell!"]
+
+        BoxStruct --> BoxBuffer["Box Buffer<br/>128 bytes/box"]
+        TriStruct --> TriBuffer["Triangle Buffer<br/>80 bytes/triangle"]
+        MatStruct --> MatBuffer["Material Buffer<br/>64 bytes/material"]
+    end
+
+    subgraph GPUSide["GPU Side (WGSL Bindings)"]
+        CamUniform --> Binding0["@group(0) @binding(0)<br/>var&lt;uniform&gt; camera"]
+        GridMeta --> Binding1["@group(0) @binding(1)<br/>var&lt;uniform&gt; grid_meta"]
+        CoarseBuffer --> Binding2["@group(0) @binding(2)<br/>var&lt;storage, read&gt; coarse_grid"]
+        FineBuffer --> Binding3["@group(0) @binding(3)<br/>var&lt;storage, read&gt; fine_cells"]
+        BoxBuffer --> Binding4["@group(0) @binding(4)<br/>var&lt;storage, read&gt; boxes"]
+        TriBuffer --> Binding5["@group(0) @binding(5)<br/>var&lt;storage, read&gt; triangles"]
+        MatBuffer --> Binding6["@group(0) @binding(6)<br/>var&lt;storage, read&gt; materials"]
+
+        SceneConfig["SceneConfig (16B)<br/>• num_boxes: u32<br/>• num_triangles: u32"] --> Binding7["@group(0) @binding(7)<br/>var&lt;uniform&gt; scene_config"]
+
+        Output["Output Texture<br/>Rgba8Unorm<br/>width × height"] --> Binding8["@group(0) @binding(8)<br/>var output_texture:<br/>  texture_storage_2d&lt;<br/>    rgba8unorm, write&gt;"]
+
+        TexArray["Texture Array<br/>2D array with all<br/>glTF textures"] --> Binding11["@group(0) @binding(11)<br/>var texture_array:<br/>  texture_2d_array&lt;f32&gt;"]
+    end
+
+    style FineBuffer fill:#ffcccc,stroke:#ff0000,stroke-width:2px
+    style CPUSide fill:#e1f5ff
+    style GPUSide fill:#fff4e1

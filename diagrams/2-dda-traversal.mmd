@@ -1,0 +1,50 @@
+%% DDA 3D Grid Traversal Algorithm
+%% Digital Differential Analyzer for spatial grid stepping
+
+flowchart TD
+    Start["Start DDA Traversal"] --> Entry["entry_point from bounds check"]
+
+    Entry --> Init["Initialize:<br/>current_cell = world_to_grid(entry_point)<br/><br/>step.x = sign(ray.direction.x)<br/>step.y = sign(ray.direction.y)<br/>step.z = sign(ray.direction.z)"]
+
+    Init --> CalcDelta["Calculate t_delta (constant):<br/><br/>t_delta.x = |cell_size / ray.direction.x|<br/>t_delta.y = |cell_size / ray.direction.y|<br/>t_delta.z = |cell_size / ray.direction.z|<br/><br/>These never change!"]
+
+    CalcDelta --> CalcMax["Calculate t_max (initial):<br/><br/>next_boundary = cell_corner + step * cell_size<br/><br/>t_max.x = (next_boundary.x - ray_pos.x) / ray.dir.x<br/>t_max.y = (next_boundary.y - ray_pos.y) / ray.dir.y<br/>t_max.z = (next_boundary.z - ray_pos.z) / ray.dir.z"]
+
+    CalcMax --> LoopStart["Loop counter i = 0"]
+
+    LoopStart --> LoopCheck{"i < 200?"}
+
+    LoopCheck -->|NO| ReturnHit["Return closest_hit"]
+
+    LoopCheck -->|YES| GetCell["Get fine cell data:<br/>idx = current_cell.x +<br/>      current_cell.y * nx +<br/>      current_cell.z * nx * ny<br/><br/>cell = fine_cells[idx]<br/>count = cell.count"]
+
+    GetCell --> TestObjects["For j = 0 to count:<br/>  obj_id = cell.object_indices[j]<br/>  IF obj_id < num_boxes:<br/>    test box<br/>  ELSE:<br/>    test triangle[obj_id - num_boxes]<br/>  <br/>  Keep closest hit"]
+
+    TestObjects --> EarlyCheck{"hit found AND<br/>hit.distance <<br/>min(t_max)?"}
+
+    EarlyCheck -->|YES| ReturnHit
+
+    EarlyCheck -->|NO| ChooseAxis{"Which axis has<br/>smallest t_max?"}
+
+    ChooseAxis -->|X| StepX["current_cell.x += step.x<br/>t_max.x += t_delta.x"]
+    ChooseAxis -->|Y| StepY["current_cell.y += step.y<br/>t_max.y += t_delta.y"]
+    ChooseAxis -->|Z| StepZ["current_cell.z += step.z<br/>t_max.z += t_delta.z"]
+
+    StepX --> BoundsX{"current_cell.x<br/>in bounds?"}
+    StepY --> BoundsY{"current_cell.y<br/>in bounds?"}
+    StepZ --> BoundsZ{"current_cell.z<br/>in bounds?"}
+
+    BoundsX -->|NO| ReturnHit
+    BoundsY -->|NO| ReturnHit
+    BoundsZ -->|NO| ReturnHit
+
+    BoundsX -->|YES| Increment
+    BoundsY -->|YES| Increment
+    BoundsZ -->|YES| Increment
+
+    Increment["i++"] --> LoopCheck
+
+    style CalcDelta fill:#ccffcc
+    style ChooseAxis fill:#ffccff
+    style EarlyCheck fill:#ffffcc
+    style ReturnHit fill:#ccccff
