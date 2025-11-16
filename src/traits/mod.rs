@@ -1,6 +1,5 @@
 pub mod controller;
 pub mod display_context;
-pub mod executor;
 pub mod frame;
 pub mod game;
 pub mod layer;
@@ -10,7 +9,6 @@ pub mod window;
 
 pub use controller::*;
 pub use display_context::*;
-pub use executor::*;
 pub use frame::*;
 pub use game::*;
 pub use layer::*;
