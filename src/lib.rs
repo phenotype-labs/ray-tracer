@@ -8,6 +8,7 @@ pub mod loaders;
 pub mod math;
 pub mod renderer;
 pub mod scenes;
+pub mod traits;
 pub mod types;
 pub mod window;
 
