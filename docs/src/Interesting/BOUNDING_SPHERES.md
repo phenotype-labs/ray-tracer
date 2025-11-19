@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bounding spheres are fundamental geometric primitives used in ray tracing and collision detection. Unlike axis-aligned bounding boxes (AABBs), spheres provide a rotation-invariant bound that can be more efficient for certain types of geometry and transformations.
+Bounding spheres are fundamental geometric primitives used in ray tracing and collision detection. Unlike [[AABB|axis-aligned bounding boxes]], spheres provide a rotation-invariant bound that can be more efficient for certain types of geometry and transformations. While [[AABB|AABBs]] are the standard for [[BVH]] construction, spheres excel in scenarios requiring rotation invariance.
 
 ## Mathematical Definition
 
@@ -159,8 +159,8 @@ pub fn welzl_sphere(points: &[Vec3]) -> (Vec3, f32) {
 - **SIMD friendly**: Parallel sphere tests trivial
 
 ### Cons
-- **Loose fitting**: Often wastes more space than AABBs
-- **Not hierarchical**: Harder to build efficient BVH structures
+- **Loose fitting**: Often wastes more space than [[AABB|AABBs]]
+- **Not hierarchical**: Harder to build efficient [[BVH]] structures
 - **Poor for thin geometry**: Terrible fit for planes, long triangles
 
 ## Use Cases in Ray Tracing
@@ -174,9 +174,15 @@ pub fn welzl_sphere(points: &[Vec3]) -> (Vec3, f32) {
 ## Hybrid Approaches
 
 Combine with other primitives:
-- **Sphere-AABB hierarchy**: Spheres at leaves, AABBs for internal nodes
+- **Sphere-[[AABB]] hierarchy**: Spheres at leaves, [[AABB|AABBs]] for internal [[BVH]] nodes
 - **Capsules**: Extended spheres for elongated objects
 - **Ellipsoids**: Scaled spheres for directional bounds
+
+## Related Topics
+
+- [[AABB]] - Axis-aligned bounding boxes, the standard for BVH construction
+- [[BVH]] - Bounding Volume Hierarchies for spatial acceleration
+- [[SAH]] - Surface Area Heuristic for optimal split selection
 
 ## References
 
