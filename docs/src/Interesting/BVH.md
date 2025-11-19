@@ -2,22 +2,32 @@
 
 ## Overview
 
-Bounding Volume Hierarchies are the dominant acceleration structure in modern ray tracing. By organizing primitives into a tree of [[AABB|AABBs]], BVHs reduce ray-primitive intersection tests from O(n) to O(log n), enabling real-time path tracing.
+Bounding Volume Hierarchies are the dominant acceleration structure in modern ray tracing. By organizing primitives into a tree of [AABBs](AABB.md), BVHs reduce ray-primitive intersection tests from O(n) to O(log n), enabling real-time path tracing.
 
 ## Core Concept
 
 A BVH is a binary tree where:
 - **Leaf nodes**: Contain actual primitives (triangles, spheres, etc.)
-- **Internal nodes**: Contain [[AABB|AABBs]] that bound all descendants
+- **Internal nodes**: Contain [AABBs](AABB.md) that bound all descendants
 - **Invariant**: Every child's AABB is contained in parent's AABB
 
-```
-         Root AABB (entire scene)
-              /          \
-      Left AABB          Right AABB
-        /    \             /      \
-     Leaf   Leaf      Leaf       Leaf
-    (tris) (tris)   (tris)     (tris)
+```mermaid
+graph TD
+    Root["Root AABB<br/>(entire scene)"]
+    Root --> L1["Left AABB"]
+    Root --> R1["Right AABB"]
+    L1 --> L2["Leaf<br/>(triangles)"]
+    L1 --> L3["Leaf<br/>(triangles)"]
+    R1 --> R2["Leaf<br/>(triangles)"]
+    R1 --> R3["Leaf<br/>(triangles)"]
+
+    style Root fill:#4a90e2,stroke:#2d5f9e,color:#fff
+    style L1 fill:#7eb3e8,stroke:#5088c9,color:#fff
+    style R1 fill:#7eb3e8,stroke:#5088c9,color:#fff
+    style L2 fill:#a8d5f2,stroke:#7eb3e8,color:#333
+    style L3 fill:#a8d5f2,stroke:#7eb3e8,color:#333
+    style R2 fill:#a8d5f2,stroke:#7eb3e8,color:#333
+    style R3 fill:#a8d5f2,stroke:#7eb3e8,color:#333
 ```
 
 ## Data Structure
@@ -72,7 +82,7 @@ pub struct BVH {
 
 ### 1. Top-Down (Recursive)
 
-The standard approach using [[SAH]]:
+The standard approach using :
 
 ```rust
 pub fn build_bvh_recursive(
@@ -373,23 +383,23 @@ pub struct QBVHNode {
 2. **Leaf size**: 4-8 primitives per leaf optimal
 3. **Early termination**: Stop when SAH cost > primitive count
 4. **Prefetch**: Prefetch child nodes during traversal
-5. **SIMD**: Use [[AABB|SIMD AABB intersection]] for 4-wide tests
+5. **SIMD**: Use [SIMD AABB intersection](AABB.md) for 4-wide tests
 
 ## Use Cases
 
 - **Static geometry**: Pre-built BVH, optimal quality
 - **Dynamic scenes**: Rebuild or refit per frame
-- **Instancing**: [[TLAS_BLAS|Two-level BVH]] with transforms
+- **Instancing**:  with transforms
 - **GPU ray tracing**: Hardware-accelerated BVH traversal
 - **Path tracing**: Critical for interactive performance
 
 ## Related Topics
 
-- [[AABB]] - Bounding volumes used in BVH nodes
-- [[SAH]] - Surface Area Heuristic for optimal construction
-- [[BOUNDING_SPHERES]] - Alternative bounding primitive
-- [[TLAS_BLAS]] - Two-level hierarchies for instancing
-- [[SBVH]] - Spatial splits for overlapping geometry
+- [AABB](AABB.md) - Bounding volumes used in BVH nodes
+-  - Surface Area Heuristic for optimal construction
+- [Bounding Spheres](BOUNDING_SPHERES.md) - Alternative bounding primitive
+-  - Two-level hierarchies for instancing
+-  - Spatial splits for overlapping geometry
 
 ## References
 

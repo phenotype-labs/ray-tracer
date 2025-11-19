@@ -2,7 +2,7 @@
 
 ## Overview
 
-Axis-Aligned Bounding Boxes are the workhorse of spatial acceleration in ray tracing. Unlike [[BOUNDING_SPHERES|Bounding Spheres]], AABBs align with coordinate axes, enabling extremely fast intersection tests and efficient [[BVH|BVH construction]].
+Axis-Aligned Bounding Boxes are the workhorse of spatial acceleration in ray tracing. Unlike [Bounding Spheres](BOUNDING_SPHERES.md), AABBs align with coordinate axes, enabling extremely fast intersection tests and efficient [BVH construction](BVH.md).
 
 ## Mathematical Definition
 
@@ -165,7 +165,7 @@ impl AABB {
 
 ### Union Operations
 
-Essential for [[BVH]] construction:
+Essential for [BVH](BVH.md) construction:
 
 ```rust
 impl AABB {
@@ -193,7 +193,7 @@ impl AABB {
 
 ## Surface Area Heuristic (SAH)
 
-Critical for optimal [[BVH]] construction. The cost function balances traversal vs intersection:
+Critical for optimal [BVH](BVH.md) construction. The cost function balances traversal vs intersection:
 
 ```
 Cost = C_traversal + (SA_left / SA_parent) * N_left * C_intersect
@@ -236,7 +236,7 @@ pub fn evaluate_sah(
 
 ## Oriented Bounding Boxes (OBB)
 
-For rotated geometry, use OBBs (see [[OBB]]):
+For rotated geometry, use OBBs (see ):
 ```rust
 pub struct OBB {
     pub center: Vec3,
@@ -247,7 +247,7 @@ pub struct OBB {
 
 ## Memory Layout for BVH
 
-Cache-friendly SoA layout for [[BVH]] nodes:
+Cache-friendly SoA layout for [BVH](BVH.md) nodes:
 
 ```rust
 #[repr(C, align(64))]  // Cache line aligned
@@ -271,7 +271,7 @@ This layout enables:
 
 ## Use Cases
 
-1. **[[BVH]] nodes**: Industry standard for acceleration structure
+1. **[BVH](BVH.md) nodes**: Industry standard for acceleration structure
 2. **Frustum culling**: Fast camera visibility tests
 3. **Broad phase collision**: Physics engine spatial partitioning
 4. **Level-of-detail**: Distance-based detail switching
@@ -279,11 +279,11 @@ This layout enables:
 
 ## Related Topics
 
-- [[BVH]] - Hierarchical spatial acceleration using AABBs
-- [[BOUNDING_SPHERES]] - Rotation-invariant alternative
-- [[SAH]] - Surface Area Heuristic for optimal BVH construction
-- [[OBB]] - Oriented bounding boxes for rotated geometry
-- [[SPATIAL_PARTITIONING]] - Grid, octree, and other structures
+- [BVH](BVH.md) - Hierarchical spatial acceleration using AABBs
+- [Bounding Spheres](BOUNDING_SPHERES.md) - Rotation-invariant alternative
+-  - Surface Area Heuristic for optimal BVH construction
+-  - Oriented bounding boxes for rotated geometry
+-  - Grid, octree, and other structures
 
 ## References
 
