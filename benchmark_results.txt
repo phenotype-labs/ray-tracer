@@ -1,0 +1,174 @@
+warning: field `num_boxes` is never read
+  --> src/renderer.rs:27:5
+   |
+14 | pub struct RayTracer {
+   |            --------- field in this struct
+...
+27 |     num_boxes: usize,
+   |     ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: `ray-tracer` (lib) generated 1 warning
+   Compiling ray-tracer v0.1.0 (/Users/mgorunuch/projects/genesis/ray-tracer)
+    Finished `bench` profile [optimized] target(s) in 1.64s
+     Running benches/bounding_volumes.rs (target/release/deps/bounding_volumes-4efd29b4b3c59d27)
+Gnuplot not found, using plotters backend
+Benchmarking sphere_intersection_hit
+Benchmarking sphere_intersection_hit: Warming up for 3.0000 s
+Benchmarking sphere_intersection_hit: Collecting 100 samples in estimated 5.0000 s (1.6B iterations)
+Benchmarking sphere_intersection_hit: Analyzing
+sphere_intersection_hit time:   [3.2081 ns 3.2537 ns 3.3186 ns]
+Found 10 outliers among 100 measurements (10.00%)
+  3 (3.00%) high mild
+  7 (7.00%) high severe
+
+Benchmarking aabb_intersection_hit
+Benchmarking aabb_intersection_hit: Warming up for 3.0000 s
+Benchmarking aabb_intersection_hit: Collecting 100 samples in estimated 5.0000 s (958M iterations)
+Benchmarking aabb_intersection_hit: Analyzing
+aabb_intersection_hit   time:   [5.0039 ns 5.0217 ns 5.0432 ns]
+Found 6 outliers among 100 measurements (6.00%)
+  5 (5.00%) high mild
+  1 (1.00%) high severe
+
+Benchmarking sphere_intersection_miss
+Benchmarking sphere_intersection_miss: Warming up for 3.0000 s
+Benchmarking sphere_intersection_miss: Collecting 100 samples in estimated 5.0000 s (1.9B iterations)
+Benchmarking sphere_intersection_miss: Analyzing
+sphere_intersection_miss
+                        time:   [2.5962 ns 2.6086 ns 2.6235 ns]
+Found 4 outliers among 100 measurements (4.00%)
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking aabb_intersection_miss
+Benchmarking aabb_intersection_miss: Warming up for 3.0000 s
+Benchmarking aabb_intersection_miss: Collecting 100 samples in estimated 5.0000 s (1.0B iterations)
+Benchmarking aabb_intersection_miss: Analyzing
+aabb_intersection_miss  time:   [4.8351 ns 4.8716 ns 4.9239 ns]
+Found 12 outliers among 100 measurements (12.00%)
+  1 (1.00%) low mild
+  3 (3.00%) high mild
+  8 (8.00%) high severe
+
+Benchmarking particle_system/spheres/100
+Benchmarking particle_system/spheres/100: Warming up for 3.0000 s
+Benchmarking particle_system/spheres/100: Collecting 100 samples in estimated 5.0422 s (424k iterations)
+Benchmarking particle_system/spheres/100: Analyzing
+particle_system/spheres/100
+                        time:   [11.742 µs 11.811 µs 11.896 µs]
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+Benchmarking particle_system/spheres/1000
+Benchmarking particle_system/spheres/1000: Warming up for 3.0000 s
+Benchmarking particle_system/spheres/1000: Collecting 100 samples in estimated 5.1211 s (50k iterations)
+Benchmarking particle_system/spheres/1000: Analyzing
+particle_system/spheres/1000
+                        time:   [100.30 µs 100.73 µs 101.31 µs]
+Found 6 outliers among 100 measurements (6.00%)
+  4 (4.00%) high mild
+  2 (2.00%) high severe
+Benchmarking particle_system/spheres/10000
+Benchmarking particle_system/spheres/10000: Warming up for 3.0000 s
+Benchmarking particle_system/spheres/10000: Collecting 100 samples in estimated 9.9237 s (10k iterations)
+Benchmarking particle_system/spheres/10000: Analyzing
+particle_system/spheres/10000
+                        time:   [974.89 µs 978.36 µs 982.48 µs]
+Found 6 outliers among 100 measurements (6.00%)
+  3 (3.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking particle_system/aabbs/100
+Benchmarking particle_system/aabbs/100: Warming up for 3.0000 s
+Benchmarking particle_system/aabbs/100: Collecting 100 samples in estimated 5.0420 s (399k iterations)
+Benchmarking particle_system/aabbs/100: Analyzing
+particle_system/aabbs/100
+                        time:   [12.497 µs 12.543 µs 12.594 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) high mild
+  2 (2.00%) high severe
+Benchmarking particle_system/aabbs/1000
+Benchmarking particle_system/aabbs/1000: Warming up for 3.0000 s
+Benchmarking particle_system/aabbs/1000: Collecting 100 samples in estimated 5.1852 s (50k iterations)
+Benchmarking particle_system/aabbs/1000: Analyzing
+particle_system/aabbs/1000
+                        time:   [101.80 µs 102.16 µs 102.65 µs]
+Found 4 outliers among 100 measurements (4.00%)
+  2 (2.00%) low mild
+  2 (2.00%) high severe
+Benchmarking particle_system/aabbs/10000
+Benchmarking particle_system/aabbs/10000: Warming up for 3.0000 s
+Benchmarking particle_system/aabbs/10000: Collecting 100 samples in estimated 9.9715 s (10k iterations)
+Benchmarking particle_system/aabbs/10000: Analyzing
+particle_system/aabbs/10000
+                        time:   [992.45 µs 1.0005 ms 1.0092 ms]
+Found 2 outliers among 100 measurements (2.00%)
+  2 (2.00%) high mild
+
+Benchmarking rotation_spheres_no_recompute
+Benchmarking rotation_spheres_no_recompute: Warming up for 3.0000 s
+Benchmarking rotation_spheres_no_recompute: Collecting 100 samples in estimated 5.0001 s (5.9M iterations)
+Benchmarking rotation_spheres_no_recompute: Analyzing
+rotation_spheres_no_recompute
+                        time:   [823.61 ns 832.17 ns 842.82 ns]
+Found 12 outliers among 100 measurements (12.00%)
+  6 (6.00%) high mild
+  6 (6.00%) high severe
+
+Benchmarking rotation_aabbs_with_recompute
+Benchmarking rotation_aabbs_with_recompute: Warming up for 3.0000 s
+Benchmarking rotation_aabbs_with_recompute: Collecting 100 samples in estimated 5.0749 s (212k iterations)
+Benchmarking rotation_aabbs_with_recompute: Analyzing
+rotation_aabbs_with_recompute
+                        time:   [23.554 µs 23.652 µs 23.761 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  4 (4.00%) high mild
+  3 (3.00%) high severe
+
+Benchmarking thin_geometry/sphere_thin_plane
+Benchmarking thin_geometry/sphere_thin_plane: Warming up for 3.0000 s
+Benchmarking thin_geometry/sphere_thin_plane: Collecting 100 samples in estimated 5.0996 s (237k iterations)
+Benchmarking thin_geometry/sphere_thin_plane: Analyzing
+thin_geometry/sphere_thin_plane
+                        time:   [21.526 µs 21.750 µs 22.038 µs]
+Found 9 outliers among 100 measurements (9.00%)
+  4 (4.00%) high mild
+  5 (5.00%) high severe
+Benchmarking thin_geometry/aabb_thin_plane
+Benchmarking thin_geometry/aabb_thin_plane: Warming up for 3.0000 s
+Benchmarking thin_geometry/aabb_thin_plane: Collecting 100 samples in estimated 5.0386 s (232k iterations)
+Benchmarking thin_geometry/aabb_thin_plane: Analyzing
+thin_geometry/aabb_thin_plane
+                        time:   [21.518 µs 21.629 µs 21.768 µs]
+Found 7 outliers among 100 measurements (7.00%)
+  3 (3.00%) low mild
+  1 (1.00%) high mild
+  3 (3.00%) high severe
+
+
+=== Memory Footprint ===
+Sphere size: 32 bytes
+AABB size: 24 bytes
+10k Spheres: 312 KB
+10k AABBs: 234 KB
+Benchmarking cache_efficiency/sphere_sequential_access
+Benchmarking cache_efficiency/sphere_sequential_access: Warming up for 3.0000 s
+Benchmarking cache_efficiency/sphere_sequential_access: Collecting 100 samples in estimated 5.0178 s (616k iterations)
+Benchmarking cache_efficiency/sphere_sequential_access: Analyzing
+cache_efficiency/sphere_sequential_access
+                        time:   [8.1286 µs 8.1988 µs 8.2866 µs]
+Found 9 outliers among 100 measurements (9.00%)
+  2 (2.00%) low mild
+  7 (7.00%) high severe
+Benchmarking cache_efficiency/aabb_sequential_access
+Benchmarking cache_efficiency/aabb_sequential_access: Warming up for 3.0000 s
+Benchmarking cache_efficiency/aabb_sequential_access: Collecting 100 samples in estimated 5.0322 s (439k iterations)
+Benchmarking cache_efficiency/aabb_sequential_access: Analyzing
+cache_efficiency/aabb_sequential_access
+                        time:   [10.525 µs 10.580 µs 10.657 µs]
+Found 3 outliers among 100 measurements (3.00%)
+  1 (1.00%) high mild
+  2 (2.00%) high severe
+

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vitepress dev",
+    "dev": "vitepress dev --port $(ports-manager get ray-tracer-docs)",
     "build": "vitepress build",
     "preview": "vitepress preview"
   },

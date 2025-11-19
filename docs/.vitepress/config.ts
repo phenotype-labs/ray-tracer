@@ -18,11 +18,33 @@ export default withMermaid(defineConfig({
     sidebar: {
       '/interesting/': [
         {
+          text: 'Quick Reference',
+          items: [
+            { text: 'Game Engine Facts', link: '/interesting/game-engine-facts' }
+          ]
+        },
+        {
+          text: 'Ray Tracing Fundamentals',
+          items: [
+            { text: 'Core Concepts', link: '/interesting/core-concepts' },
+            { text: 'Lighting & Shadows', link: '/interesting/lighting-shadows' },
+            { text: 'Materials & Physics', link: '/interesting/materials-physics' },
+            { text: 'Color & Sampling', link: '/interesting/color-sampling' }
+          ]
+        },
+        {
           text: 'Acceleration Structures',
           items: [
             { text: 'AABB', link: '/interesting/aabb' },
             { text: 'BVH', link: '/interesting/bvh' },
             { text: 'Bounding Spheres', link: '/interesting/bounding-spheres' }
+          ]
+        },
+        {
+          text: 'Advanced Topics',
+          items: [
+            { text: 'Advanced Techniques', link: '/interesting/advanced-techniques' },
+            { text: 'Debug & Visualization', link: '/interesting/debug-visualization' }
           ]
         },
         {
