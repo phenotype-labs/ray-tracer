@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitepress'
+import { withMermaid } from 'vitepress-plugin-mermaid'
 
-export default defineConfig({
+export default withMermaid(defineConfig({
   title: 'Ray Tracer',
   description: 'High-performance WebGPU-based ray tracer with physically-based rendering',
   base: '/ray-tracer/',
@@ -22,6 +23,13 @@ export default defineConfig({
             { text: 'AABB', link: '/interesting/aabb' },
             { text: 'BVH', link: '/interesting/bvh' },
             { text: 'Bounding Spheres', link: '/interesting/bounding-spheres' }
+          ]
+        },
+        {
+          text: 'Performance',
+          items: [
+            { text: 'Performance Analysis', link: '/interesting/performance' },
+            { text: 'Interactive Charts', link: '/interesting/charts-demo' }
           ]
         }
       ]
@@ -49,5 +57,13 @@ export default defineConfig({
   markdown: {
     theme: 'github-dark',
     lineNumbers: true
+  },
+
+  // Mermaid configuration
+  mermaid: {
+    // Mermaid config options
+  },
+  mermaidPlugin: {
+    class: 'mermaid'
   }
-})
+}))
