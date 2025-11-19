@@ -1,5 +1,21 @@
 # Performance Analysis
 
+## Facts: Why This Matters
+
+**Profiling reveals uncomfortable truths:** The bottleneck is never where you think it is. This guide exists because premature optimization kills more projects than bad algorithms.
+
+- **Cache Misses > Algorithm**: A cache-friendly O(n) implementation often beats a cache-hostile O(log n) one - memory bandwidth is your real enemy
+- **SIMD Wins**: 4-wide SIMD AABB tests provide 3-4x speedup over scalar code - this is free performance if your data layout cooperates
+- **Build Quality Compounds**: A 2ms SAH build that produces 10% better BVH saves milliseconds every frame - the investment pays off in ~100 frames
+- **80/20 Rule**: In production ray tracers, 80% of time is spent in BVH traversal and primitive intersection - optimize these first, always
+- **GPU ≠ CPU**: What works on CPU often fails on GPU - divergent branching in BVH traversal can destroy GPU performance
+
+**The Hard Truth:** Every optimization comes with trade-offs. Understanding *when* to apply which technique is more valuable than knowing every technique.
+
+**This guide shows:** Real benchmarks, actual bottlenecks, and optimization decisions from production ray tracers. No theoretical BS.
+
+---
+
 Performance benchmarks and optimization insights for ray tracing acceleration structures.
 
 ## BVH Construction Performance

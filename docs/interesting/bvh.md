@@ -1,5 +1,19 @@
 # BVH (Bounding Volume Hierarchies)
 
+## Facts: Why This Matters
+
+**BVH is the algorithm that made real-time ray tracing possible.** Understanding this structure is mandatory for any serious graphics programmer.
+
+- **Algorithmic Impact**: Reduces intersection tests from O(n) to O(log n) - in a 1M triangle scene, this means ~20 tests instead of 1,000,000
+- **Hardware Acceleration**: Modern GPUs (RTX series) have dedicated BVH hardware - Nvidia's RT cores implement hardware-accelerated BVH traversal
+- **Universal Adoption**: Used by Pixar (RenderMan), ILM, Weta Digital, every game engine with ray tracing, and all offline renderers
+- **Quality vs Speed**: The Surface Area Heuristic (SAH) for BVH construction was a PhD thesis that became an industry standard within 5 years
+- **Dynamic Scenes**: Enables real-time updates through refitting or incremental rebuilds - critical for games and interactive applications
+
+**Real-world impact:** A well-built BVH can make a 10M triangle scene render at the same speed as a poorly-built BVH with 100K triangles. The construction algorithm matters more than raw triangle count.
+
+**Bottom line:** If you skip learning BVH, you're skipping the single most important optimization in ray tracing.
+
 ## Overview
 
 Bounding Volume Hierarchies are the dominant acceleration structure in modern ray tracing. By organizing primitives into a tree of [AABBs](/interesting/aabb), BVHs reduce ray-primitive intersection tests from O(n) to O(log n), enabling real-time path tracing.

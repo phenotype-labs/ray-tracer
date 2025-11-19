@@ -1,5 +1,17 @@
 # AABB (Axis-Aligned Bounding Boxes)
 
+## Facts: Why This Matters
+
+**Every real-time ray tracer uses AABBs.** Without understanding this primitive, you can't build efficient acceleration structures.
+
+- **Performance Impact**: The difference between 1 FPS and 144 FPS in ray tracing comes down to AABB intersection efficiency
+- **Industry Standard**: Used in every production renderer - Pixar's RenderMan, Nvidia OptiX, Unreal Engine, Unity
+- **~20 Instructions**: A well-optimized AABB test runs in ~20 CPU cycles - this simplicity enables billions of tests per second
+- **Cache Efficiency**: 24 bytes (6 floats) fits perfectly in cache lines, making it the most memory-friendly bounding primitive
+- **Foundation of BVH**: Understanding AABBs is prerequisite to understanding Bounding Volume Hierarchies, the dominant acceleration structure
+
+**Real-world impact:** Optimizing AABB intersection from naive to SIMD typically yields 3-4x performance improvement. In a 1M triangle scene, this is the difference between interactive and unusable.
+
 ## Overview
 
 Axis-Aligned Bounding Boxes are the workhorse of spatial acceleration in ray tracing. Unlike [Bounding Spheres](/interesting/bounding-spheres), AABBs align with coordinate axes, enabling extremely fast intersection tests and efficient [BVH construction](/interesting/bvh).

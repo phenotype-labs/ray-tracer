@@ -1,5 +1,21 @@
 # Bounding Spheres
 
+## Facts: Why This Matters
+
+**Spheres are the most elegant primitive in computational geometry**, but they're not always the best choice. Knowing when to use them (and when not to) separates novices from experts.
+
+- **Rotation Invariance**: Only bounding primitive that doesn't change under rotation - critical for rotating rigid bodies in physics engines
+- **Simplest Math**: Ray-sphere intersection is a quadratic equation - one of the few intersection tests you can solve analytically
+- **4 Floats**: Most compact bounding volume (center + radius) - even smaller than AABBs (6 floats)
+- **Historical Significance**: Used in early ray tracers (Whitted 1980) before AABBs became standard
+- **Niche Optimization**: Still optimal for specific cases - particle systems, character bounds, level-of-detail switching
+
+**The Trade-off:** Spheres waste ~30-50% more space than AABBs for typical geometry, but they're faster to test against and never need recomputation on rotation.
+
+**When to use:** Dynamic rotating objects, particle systems, coarse culling. **When to avoid:** Static geometry, thin objects (planes, walls), BVH construction.
+
+**Key insight:** Understanding why AABBs replaced spheres in production teaches you more about performance than learning either primitive alone.
+
 ## Overview
 
 Bounding spheres are fundamental geometric primitives used in ray tracing and collision detection. Unlike [axis-aligned bounding boxes](/interesting/aabb), spheres provide a rotation-invariant bound that can be more efficient for certain types of geometry and transformations. While [AABBs](/interesting/aabb) are the standard for [BVH](/interesting/bvh) construction, spheres excel in scenarios requiring rotation invariance.
