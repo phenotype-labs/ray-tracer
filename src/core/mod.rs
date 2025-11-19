@@ -12,6 +12,13 @@ pub mod surface_renderer;
 pub mod timer;
 pub mod window;
 
+// Optimization tools
+pub mod bvh;
+pub mod sphere;
+pub mod triangle_intersection;
+pub mod perf_test;
+pub mod benchmark;
+
 pub use canvas_layer::*;
 pub use clock::*;
 pub use controller::*;
@@ -25,3 +32,9 @@ pub use renderer::*;
 pub use surface_renderer::*;
 pub use timer::*;
 pub use window::*;
+
+pub use bvh::*;
+pub use sphere::*;
+pub use triangle_intersection::*;
+pub use perf_test::*;
+pub use benchmark::*;

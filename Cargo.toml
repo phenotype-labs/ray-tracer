@@ -11,7 +11,12 @@ path = "src/lib.rs"
 name = "ray-tracer"
 path = "src/main.rs"
 
+[[example]]
+name = "massive_benchmark"
+path = "examples/massive_benchmark.rs"
+
 [dependencies]
+chrono = "0.4"
 winit = "0.30"
 wgpu = "27"
 pollster = "0.3"
