@@ -2,13 +2,13 @@
 
 ## Overview
 
-Bounding Volume Hierarchies are the dominant acceleration structure in modern ray tracing. By organizing primitives into a tree of [AABBs](AABB.md), BVHs reduce ray-primitive intersection tests from O(n) to O(log n), enabling real-time path tracing.
+Bounding Volume Hierarchies are the dominant acceleration structure in modern ray tracing. By organizing primitives into a tree of [AABBs](/interesting/aabb), BVHs reduce ray-primitive intersection tests from O(n) to O(log n), enabling real-time path tracing.
 
 ## Core Concept
 
 A BVH is a binary tree where:
 - **Leaf nodes**: Contain actual primitives (triangles, spheres, etc.)
-- **Internal nodes**: Contain [AABBs](AABB.md) that bound all descendants
+- **Internal nodes**: Contain [AABBs](/interesting/aabb) that bound all descendants
 - **Invariant**: Every child's AABB is contained in parent's AABB
 
 ```mermaid
@@ -383,7 +383,7 @@ pub struct QBVHNode {
 2. **Leaf size**: 4-8 primitives per leaf optimal
 3. **Early termination**: Stop when SAH cost > primitive count
 4. **Prefetch**: Prefetch child nodes during traversal
-5. **SIMD**: Use [SIMD AABB intersection](AABB.md) for 4-wide tests
+5. **SIMD**: Use [SIMD AABB intersection](/interesting/aabb) for 4-wide tests
 
 ## Use Cases
 
@@ -395,9 +395,9 @@ pub struct QBVHNode {
 
 ## Related Topics
 
-- [AABB](AABB.md) - Bounding volumes used in BVH nodes
+- [AABB](/interesting/aabb) - Bounding volumes used in BVH nodes
 -  - Surface Area Heuristic for optimal construction
-- [Bounding Spheres](BOUNDING_SPHERES.md) - Alternative bounding primitive
+- [Bounding Spheres](/interesting/bounding-spheres) - Alternative bounding primitive
 -  - Two-level hierarchies for instancing
 -  - Spatial splits for overlapping geometry
 

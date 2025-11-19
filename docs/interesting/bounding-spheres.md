@@ -2,7 +2,7 @@
 
 ## Overview
 
-Bounding spheres are fundamental geometric primitives used in ray tracing and collision detection. Unlike [axis-aligned bounding boxes](AABB.md), spheres provide a rotation-invariant bound that can be more efficient for certain types of geometry and transformations. While [AABBs](AABB.md) are the standard for [BVH](BVH.md) construction, spheres excel in scenarios requiring rotation invariance.
+Bounding spheres are fundamental geometric primitives used in ray tracing and collision detection. Unlike [axis-aligned bounding boxes](/interesting/aabb), spheres provide a rotation-invariant bound that can be more efficient for certain types of geometry and transformations. While [AABBs](/interesting/aabb) are the standard for [BVH](/interesting/bvh) construction, spheres excel in scenarios requiring rotation invariance.
 
 ## Mathematical Definition
 
@@ -159,8 +159,8 @@ pub fn welzl_sphere(points: &[Vec3]) -> (Vec3, f32) {
 - **SIMD friendly**: Parallel sphere tests trivial
 
 ### Cons
-- **Loose fitting**: Often wastes more space than [AABBs](AABB.md)
-- **Not hierarchical**: Harder to build efficient [BVH](BVH.md) structures
+- **Loose fitting**: Often wastes more space than [AABBs](/interesting/aabb)
+- **Not hierarchical**: Harder to build efficient [BVH](/interesting/bvh) structures
 - **Poor for thin geometry**: Terrible fit for planes, long triangles
 
 ## Use Cases in Ray Tracing
@@ -174,14 +174,14 @@ pub fn welzl_sphere(points: &[Vec3]) -> (Vec3, f32) {
 ## Hybrid Approaches
 
 Combine with other primitives:
-- **Sphere-[AABB](AABB.md) hierarchy**: Spheres at leaves, [AABBs](AABB.md) for internal [BVH](BVH.md) nodes
+- **Sphere-[AABB](/interesting/aabb) hierarchy**: Spheres at leaves, [AABBs](/interesting/aabb) for internal [BVH](/interesting/bvh) nodes
 - **Capsules**: Extended spheres for elongated objects
 - **Ellipsoids**: Scaled spheres for directional bounds
 
 ## Related Topics
 
-- [AABB](AABB.md) - Axis-aligned bounding boxes, the standard for BVH construction
-- [BVH](BVH.md) - Bounding Volume Hierarchies for spatial acceleration
+- [AABB](/interesting/aabb) - Axis-aligned bounding boxes, the standard for BVH construction
+- [BVH](/interesting/bvh) - Bounding Volume Hierarchies for spatial acceleration
 
 ## References
 

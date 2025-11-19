@@ -24,21 +24,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup mdBook
-        uses: peaceiris/actions-mdbook@v2
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          mdbook-version: '0.5.0'
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs/package-lock.json
 
-      - name: Install mdbook-mermaid
-        run: cargo install mdbook-mermaid --version 0.17.0
+      - name: Install dependencies
+        run: npm ci
+        working-directory: docs
 
-      - name: Build book
-        run: cd docs && mdbook build
+      - name: Build VitePress
+        run: npm run build
+        working-directory: docs
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: docs/book
+          path: docs/.vitepress/dist
 
   deploy:
     environment:
